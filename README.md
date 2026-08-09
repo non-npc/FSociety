@@ -284,3 +284,7 @@ are encrypted and delivered normally. Earlier solo-group messages are not sent
 retroactively to the new member, so pre-membership history remains private. Any
 unwanted local-only message can be removed with **Hide message locally** from its
 right-click menu.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
