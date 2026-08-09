@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=fsociety
+Comment=Decentralized Nostr and Blossom secure messenger
+Exec=fsociety
+Icon=fsociety
+Terminal=false
+Categories=Network;Chat;InstantMessaging;
+StartupNotify=true
