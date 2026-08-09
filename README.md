@@ -271,3 +271,12 @@ Invites are valid for 24 hours, signed, and targeted to one recipient npub; dama
 expired, or wrong-recipient codes are rejected before local membership changes.
 Any current member may create an invite. Member-created invites preserve the
 original creator key so creator-only group authority remains consistent.
+
+When the creator is the group's only member, there is nobody else for whom the
+client can create an encrypted NIP-17 gift wrap. Messages composed in that state
+remain visible only in the creator's local database and may be marked **Failed**;
+they are not published to relays. After another member joins, newly sent messages
+are encrypted and delivered normally. Earlier solo-group messages are not sent
+retroactively to the new member, so pre-membership history remains private. Any
+unwanted local-only message can be removed with **Hide message locally** from its
+right-click menu.
