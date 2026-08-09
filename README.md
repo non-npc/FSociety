@@ -4,6 +4,8 @@
 ![Windows supported](https://img.shields.io/badge/Windows-Supported-4debf3?style=for-the-badge&logo=windows&logoColor=white&labelColor=11191b)
 ![Linux supported](https://img.shields.io/badge/Linux-Supported-4debf3?style=for-the-badge&logo=linux&logoColor=white&labelColor=11191b)
 
+![FSociety decentralized messaging over Nostr and Blossom](assets/fsociety-decentralized-messaging-ad.png)
+
 **fsociety** is a decentralized desktop messenger built on the
 Nostr protocol. It provides encrypted direct messages and private communities,
 Nostr identities and profiles, contacts, encrypted file and media
