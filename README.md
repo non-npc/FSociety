@@ -51,6 +51,10 @@ For installation and day-to-day operation, see the
 
 ![fsociety connecting to configured Nostr relays](screenshots/connecting.png)
 
+### Group chat example
+
+![fsociety encrypted group chat example](screenshots/group-view.png)
+
 ### Network health
 
 ![fsociety network health and relay statistics](screenshots/network.png)
