@@ -132,7 +132,7 @@ enable the installer's option to add Python to `PATH`, then confirm it works wit
 normal package manager, then confirm it with `python3 --version`.
 
 After Python is available, install the client dependencies from inside the
-`client` folder:
+app folder:
 
 ```powershell
 python -m pip install -r requirements.txt
