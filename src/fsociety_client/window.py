@@ -654,7 +654,7 @@ class GroupSettingsDialog(QDialog):
             database.get_setting(f"group.inline_images:{conversation.id}", "true")
             == "true"
         )
-        self.show_videos = QCheckBox("Show video players inline in this group")
+        self.show_videos = QCheckBox("Show video launchers in this group")
         self.show_videos.setChecked(
             database.get_setting(f"group.inline_videos:{conversation.id}", "true")
             == "true"

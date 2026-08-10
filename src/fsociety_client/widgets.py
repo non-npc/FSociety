@@ -12,6 +12,7 @@ from PyQt6.QtGui import QColor, QFont, QImageReader, QMovie, QPainter, QPainterP
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtWidgets import (
+    QDialog,
     QFrame,
     QFileDialog,
     QHBoxLayout,
@@ -373,22 +374,19 @@ class InlineImageAttachment(QLabel):
             )
 
 
-class VideoAttachment(QWidget):
-    """Inline, user-controlled playback for a verified local video attachment."""
+class VideoPlayerDialog(QDialog):
+    """Play a verified local video outside the scrolling message hierarchy."""
 
     def __init__(self, path: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setWindowTitle(f"fsociety video // {Path(path).name}")
+        self.resize(760, 500)
         self.setStyleSheet("border:0;background:#080d0e;")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(3, 3, 3, 3)
         layout.setSpacing(4)
         self.video = QVideoWidget(self)
-        # The FFmpeg video surface may require its own native window on Windows,
-        # but the surrounding ChatPane must remain an ordinary child widget.
-        # Otherwise popup menus try to use ChatPaneClassWindow as a transient
-        # parent and Qt warns that it is not a top-level window.
-        self.video.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
-        self.video.setMinimumSize(420, 236)
+        self.video.setMinimumSize(640, 360)
         self.video.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
         layout.addWidget(self.video)
 
@@ -448,6 +446,51 @@ class VideoAttachment(QWidget):
         self.play.setText("UNPLAYABLE")
         self.play.setEnabled(False)
         self.setToolTip(error_text or "This system does not have a codec for the video.")
+
+    def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self.player.stop()
+        self.player.setVideoOutput(None)
+        self.player.setAudioOutput(None)
+        super().closeEvent(event)
+
+
+class VideoAttachment(QWidget):
+    """Launch video playback without creating a native surface in the chat list."""
+
+    def __init__(self, path: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.path = path
+        self.player_dialog: VideoPlayerDialog | None = None
+        self.setStyleSheet(f"border:1px solid {LINE};background:#080d0e;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        filename = QLabel(Path(path).name)
+        filename.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        filename.setWordWrap(True)
+        filename.setStyleSheet(f"color:{TEXT};border:0;")
+        layout.addWidget(filename)
+
+        open_video = QPushButton("▶  OPEN VIDEO")
+        open_video.setObjectName("openVideo")
+        open_video.setToolTip("Open this video in a dedicated player window")
+        open_video.clicked.connect(self._open_player)
+        layout.addWidget(open_video)
+
+    def _open_player(self) -> None:
+        if self.player_dialog is not None and self.player_dialog.isVisible():
+            self.player_dialog.raise_()
+            self.player_dialog.activateWindow()
+            return
+        self.player_dialog = VideoPlayerDialog(self.path, self.window())
+        self.player_dialog.finished.connect(self._player_closed)
+        self.player_dialog.show()
+
+    def _player_closed(self) -> None:
+        if self.player_dialog is not None:
+            self.player_dialog.deleteLater()
+        self.player_dialog = None
 
 
 class FileAttachment(QWidget):

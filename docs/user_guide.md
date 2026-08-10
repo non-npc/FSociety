@@ -253,7 +253,7 @@ it. Recipients verify the SHA-256 hash before using the file.
 
 - supported images are embedded in the conversation;
 - animated GIF and animated PNG content plays when supported by Qt;
-- supported short videos are embedded with playback controls;
+- supported short videos open in a dedicated player after an explicit click;
 - ZIP and RAR archives, along with other files, appear as verified attachments
   with a **Save File As** control and are never opened automatically;
 - videos default to a 30 MB maximum;

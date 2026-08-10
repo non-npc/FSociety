@@ -10,6 +10,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QEvent, QMimeData, Qt
 from PyQt6.QtGui import QImage
+from PyQt6.QtMultimedia import QMediaPlayer
+from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton
 
 from fsociety_client.database import ClientDatabase
@@ -306,6 +308,19 @@ class ClientInteractionTests(unittest.TestCase):
             if label.pixmap() is not None and not label.pixmap().isNull()
         ]
         self.assertEqual(len(rendered), 1)
+        bubble.close()
+
+    def test_video_attachment_does_not_create_player_inside_message_bubble(self) -> None:
+        path = Path(self.temporary_directory.name, "clip.mp4")
+        path.write_bytes(b"video fixture")
+        self.database.queue_attachment("zero", str(path), "shared video")
+        message = self.database.list_messages("zero")[-1]
+        bubble = MessageBubble(message)
+
+        self.assertEqual(bubble.findChildren(QMediaPlayer), [])
+        self.assertEqual(bubble.findChildren(QVideoWidget), [])
+        buttons = [button.text() for button in bubble.findChildren(QPushButton)]
+        self.assertIn("▶  OPEN VIDEO", buttons)
         bubble.close()
 
     def test_archive_attachment_has_save_control(self) -> None:
