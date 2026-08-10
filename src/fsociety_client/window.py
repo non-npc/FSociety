@@ -51,7 +51,7 @@ from .moderation import ModerationSyncWorker
 from .models import Conversation
 from .resources import create_hud_icon
 from .transport import NostrTransport
-from .theme import CORAL, CYAN, LINE, MUTED, PANEL, TEXT, VOID
+from .theme import CORAL, CYAN, LINE, MUTED, PANEL, TEXT, UI_SMALL_FONT_PX, VOID
 from .widgets import (
     AvatarLabel,
     BrandMark,
@@ -190,9 +190,9 @@ class NavRail(QFrame):
                     QSize(34, 34) if self.expanded else self.profile_button.size() - QSize(4, 4)
                 )
         self.profile_button.setStyleSheet(
-            "font:600 11px 'Perfect DOS VGA 437 Win';text-align:left;padding-left:8px;"
+            f"font:600 {UI_SMALL_FONT_PX}px 'Perfect DOS VGA 437 Win';text-align:left;padding-left:8px;"
             if self.expanded
-            else "font:600 10px 'Perfect DOS VGA 437 Win';"
+            else f"font:600 {UI_SMALL_FONT_PX}px 'Perfect DOS VGA 437 Win';"
         )
 
 
@@ -765,7 +765,10 @@ class ChatPane(QWidget):
         header_layout.addLayout(identity)
         header_layout.addStretch(1)
         cipher = QLabel("CIPHER  NIP-44")
-        cipher.setStyleSheet(f"color:{CYAN};border:1px solid {LINE};padding:6px 8px;font:8px 'Perfect DOS VGA 437 Win';")
+        cipher.setStyleSheet(
+            f"color:{CYAN};border:1px solid {LINE};padding:6px 8px;"
+            f"font:{UI_SMALL_FONT_PX}px 'Perfect DOS VGA 437 Win';"
+        )
         header_layout.addWidget(cipher)
         for icon_name, tip, handler in (
             ("search", "Search conversation", self._search_conversation),
@@ -1927,7 +1930,7 @@ class MainWindow(QMainWindow):
         top_plate.setFixedHeight(25)
         top_plate.setStyleSheet(
             f"background:#14252a;color:{TEXT};border-top:2px solid {CYAN};"
-            "font:600 9px 'Perfect DOS VGA 437 Win';letter-spacing:2px;"
+            f"font:600 {UI_SMALL_FONT_PX}px 'Perfect DOS VGA 437 Win';letter-spacing:2px;"
         )
         outer.addWidget(top_plate)
 

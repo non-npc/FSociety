@@ -1,6 +1,6 @@
 # fsociety User Guide
 
-This guide covers the fsociety desktop client, **Open Beta v0.3.2**, on
+This guide covers the fsociety desktop client, **Open Beta v0.3.3**, on
 Windows and Linux. fsociety is a decentralized messenger built on Nostr. It
 uses NIP-17 encrypted messages for direct chats and private communities,
 Blossom for encrypted attachments, and local SQLite databases for portable

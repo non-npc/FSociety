@@ -9,6 +9,7 @@ PANEL_2 = "#121a1b"
 LINE = "#263235"
 TEXT = "#e7f0ec"
 MUTED = "#83918c"
+UI_SMALL_FONT_PX = 12
 
 
 APP_STYLESHEET = f"""
@@ -24,11 +25,11 @@ QFrame#sidebar {{ background: {PANEL}; border-right: 1px solid {LINE}; }}
 QFrame#chatHeader {{ background: {PANEL}; border-bottom: 1px solid {LINE}; }}
 QFrame#composerFrame {{ background: #101718; border: 1px solid {LINE}; border-bottom: 2px solid {CYAN}; }}
 QLabel#brand {{ font: 600 19px "Perfect DOS VGA 437 Win"; }}
-QLabel#protocolLive {{ color: {CORAL}; font: 600 10px "Perfect DOS VGA 437 Win"; }}
-QLabel#sectionCode {{ color: {CYAN}; font: 600 9px "Perfect DOS VGA 437 Win"; letter-spacing: 2px; }}
+QLabel#protocolLive {{ color: {CORAL}; font: 600 {UI_SMALL_FONT_PX}px "Perfect DOS VGA 437 Win"; }}
+QLabel#sectionCode {{ color: {CYAN}; font: 600 {UI_SMALL_FONT_PX}px "Perfect DOS VGA 437 Win"; letter-spacing: 2px; }}
 QLabel#muted {{ color: {MUTED}; }}
-QLabel#presence {{ color: {CYAN}; font: 10px "Perfect DOS VGA 437 Win"; }}
-QLabel#networkStatus {{ color: {MUTED}; font: 9px "Perfect DOS VGA 437 Win"; }}
+QLabel#presence {{ color: {CYAN}; font: {UI_SMALL_FONT_PX}px "Perfect DOS VGA 437 Win"; }}
+QLabel#networkStatus {{ color: {MUTED}; font: {UI_SMALL_FONT_PX}px "Perfect DOS VGA 437 Win"; }}
 QLineEdit, QTextEdit, QComboBox {{
     color: {TEXT}; background: #0a0f10; border: 1px solid {LINE};
     padding: 9px 10px; selection-background-color: {CYAN}; selection-color: {VOID};
@@ -48,7 +49,7 @@ QCheckBox:disabled {{ color: {MUTED}; }}
 QPushButton {{ background: transparent; border: 0; padding: 8px; color: {MUTED}; }}
 QPushButton:hover {{ color: {CYAN}; background: #172022; }}
 QPushButton:checked {{ color: {CYAN}; border-left: 2px solid {CYAN}; background: #102024; }}
-QPushButton#filter {{ font: 10px "Perfect DOS VGA 437 Win"; padding: 7px 10px; }}
+QPushButton#filter {{ font: {UI_SMALL_FONT_PX}px "Perfect DOS VGA 437 Win"; padding: 7px 10px; }}
 QPushButton#filter:checked {{ color: {VOID}; background: {CORAL}; border: 0; }}
 QPushButton#send {{ color: white; background: {CORAL}; font: 700 16px "Perfect DOS VGA 437 Win"; padding: 8px 13px; }}
 QPushButton#send:hover {{ background: #ff6685; }}

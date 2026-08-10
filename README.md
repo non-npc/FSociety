@@ -1,6 +1,6 @@
 # fsociety client
 
-![Version: Open Beta v0.3.2](https://img.shields.io/badge/version-Open%20Beta%20v0.3.2-4debf3?style=for-the-badge&labelColor=11191b)
+![Version: Open Beta v0.3.3](https://img.shields.io/badge/version-Open%20Beta%20v0.3.3-4debf3?style=for-the-badge&labelColor=11191b)
 ![Windows supported](https://img.shields.io/badge/Windows-Supported-4debf3?style=for-the-badge&logo=windows&logoColor=white&labelColor=11191b)
 ![Linux supported](https://img.shields.io/badge/Linux-Supported-4debf3?style=for-the-badge&logo=linux&logoColor=white&labelColor=11191b)
 

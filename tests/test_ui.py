@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton
 
 from fsociety_client.database import ClientDatabase
 from fsociety_client.identity import IdentityVault, RecoveryDialog
+from fsociety_client.models import Message
 from fsociety_client.theme import APP_STYLESHEET
 from fsociety_client.window import (
     GROUP_CONTROL_PREFIX,
@@ -23,7 +24,7 @@ from fsociety_client.window import (
     MessageComposer,
     SettingsDialog,
 )
-from fsociety_client.widgets import MessageBubble
+from fsociety_client.widgets import MessageBubble, MessageRow
 from fixtures import seed_conversation_fixtures
 
 
@@ -322,6 +323,18 @@ class ClientInteractionTests(unittest.TestCase):
         buttons = [button.text() for button in bubble.findChildren(QPushButton)]
         self.assertIn("▶  OPEN VIDEO", buttons)
         bubble.close()
+
+    def test_message_bubble_uses_eighty_percent_of_row_width(self) -> None:
+        message = Message(1, "zero", "outgoing", "hello", 1, "received", "NIP-17")
+        row = MessageRow(message)
+        row.resize(1000, 160)
+        row.show()
+        self.application.processEvents()
+
+        bubble = row.findChild(MessageBubble)
+        self.assertIsNotNone(bubble)
+        self.assertAlmostEqual(bubble.width() / row.width(), 0.8, delta=0.02)
+        row.close()
 
     def test_archive_attachment_has_save_control(self) -> None:
         path = Path(self.temporary_directory.name, "backup.zip")

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fsociety-client"
-version = "0.3.2"
+version = "0.3.3"
 description = "An offline-first Nostr and Blossom desktop messenger"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .models import Conversation, Message
-from .theme import CORAL, CYAN, LINE, MUTED, PANEL_2, TEXT, VOID
+from .theme import CORAL, CYAN, LINE, MUTED, PANEL_2, TEXT, UI_SMALL_FONT_PX, VOID
 
 
 WEB_LINK_PATTERN = re.compile(
@@ -38,6 +38,13 @@ WEB_LINK_PATTERN = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+
+def ui_small_font(weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
+    font = QFont("Perfect DOS VGA 437 Win")
+    font.setPixelSize(UI_SMALL_FONT_PX)
+    font.setWeight(weight)
+    return font
 
 
 def linkify_message_text(value: str) -> str:
@@ -157,13 +164,13 @@ class HudTelemetry(QWidget):
         painter.setPen(QPen(QColor(CYAN), 6))
         painter.drawArc(ring, 90 * 16, -round(360 * 16 * percentage / 100))
         painter.setPen(QColor(TEXT))
-        painter.setFont(QFont("Perfect DOS VGA 437 Win", 7, QFont.Weight.DemiBold))
+        painter.setFont(ui_small_font(QFont.Weight.DemiBold))
         painter.drawText(ring, Qt.AlignmentFlag.AlignCenter, f"{percentage}%")
 
         left = 69
         available = max(40, self.width() - left - 43)
         painter.setPen(QColor(MUTED))
-        painter.setFont(QFont("Perfect DOS VGA 437 Win", 6))
+        painter.setFont(ui_small_font())
         painter.drawText(left, 18, f"RELAY MESH     {connected}/{total}")
         count = max(1, len(samples))
         bar_width = max(4.0, min(12.0, (available - max(0, count - 1) * 3) / count))
@@ -173,7 +180,7 @@ class HudTelemetry(QWidget):
             color = QColor(CYAN if state == "CONNECTED" else CORAL if state == "UNAVAILABLE" else MUTED)
             painter.fillRect(QRectF(left + index * (bar_width + 3), 52 - height, bar_width, height), color)
         painter.setPen(QColor(CYAN if self.inbox_status == "CONNECTED" else CORAL))
-        painter.setFont(QFont("Perfect DOS VGA 437 Win", 6, QFont.Weight.DemiBold))
+        painter.setFont(ui_small_font(QFont.Weight.DemiBold))
         painter.drawText(self.width() - 30, 22, "N17")
         painter.drawText(self.width() - 30, 34, f"E{unavailable}")
         painter.drawText(
@@ -244,7 +251,7 @@ class RelayMeshView(QWidget):
             Qt.AlignmentFlag.AlignCenter,
             "FSOCIETY",
         )
-        painter.setFont(QFont("Perfect DOS VGA 437 Win", 9))
+        painter.setFont(ui_small_font())
         painter.setPen(QColor(CYAN if self.inbox_status == "CONNECTED" else MUTED))
         painter.drawText(
             QRectF(center.x() - 45, center.y() + 5, 90, 18),
@@ -257,7 +264,7 @@ class RelayMeshView(QWidget):
             painter.setBrush(QColor("#101718"))
             painter.drawEllipse(position, 15, 15)
             painter.setPen(color)
-            painter.setFont(QFont("Perfect DOS VGA 437 Win", 8, QFont.Weight.DemiBold))
+            painter.setFont(ui_small_font(QFont.Weight.DemiBold))
             label = relay.removeprefix("wss://").removeprefix("ws://")
             painter.drawText(
                 QRectF(position.x() - 105, position.y() + 20, 210, 34),
@@ -281,7 +288,7 @@ class AvatarLabel(QLabel):
         self.setFixedSize(size, size)
         self.setStyleSheet(
             f"background:#182326;color:{color};border:1px solid #354548;"
-            "font:600 10px 'Perfect DOS VGA 437 Win';"
+            f"font:600 {UI_SMALL_FONT_PX}px 'Perfect DOS VGA 437 Win';"
         )
         if image_png:
             pixmap = QPixmap()
@@ -327,14 +334,17 @@ class ConversationRow(QWidget):
         meta = QVBoxLayout()
         meta.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
         timestamp = QLabel(conversation.time_label)
-        timestamp.setStyleSheet(f"color:{MUTED};font:9px 'Perfect DOS VGA 437 Win';")
+        timestamp.setStyleSheet(
+            f"color:{MUTED};font:{UI_SMALL_FONT_PX}px 'Perfect DOS VGA 437 Win';"
+        )
         meta.addWidget(timestamp, alignment=Qt.AlignmentFlag.AlignRight)
         if conversation.unread_count:
             unread = QLabel(str(conversation.unread_count))
             unread.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            unread.setFixedSize(19, 19)
+            unread.setFixedSize(22, 22)
             unread.setStyleSheet(
-                f"background:{CORAL};color:white;font:600 9px 'Perfect DOS VGA 437 Win';"
+                f"background:{CORAL};color:white;"
+                f"font:600 {UI_SMALL_FONT_PX}px 'Perfect DOS VGA 437 Win';"
             )
             meta.addWidget(unread, alignment=Qt.AlignmentFlag.AlignRight)
         layout.addLayout(meta)
@@ -398,7 +408,9 @@ class VideoPlayerDialog(QDialog):
         self.position = QSlider(Qt.Orientation.Horizontal)
         self.position.setRange(0, 0)
         self.time = QLabel("00:00 / 00:00")
-        self.time.setStyleSheet(f"color:{MUTED};font:8px 'Perfect DOS VGA 437 Win';border:0;")
+        self.time.setStyleSheet(
+            f"color:{MUTED};font:{UI_SMALL_FONT_PX}px 'Perfect DOS VGA 437 Win';border:0;"
+        )
         controls.addWidget(self.play)
         controls.addWidget(self.position, 1)
         controls.addWidget(self.time)
@@ -544,8 +556,7 @@ class MessageBubble(QFrame):
         system = message.direction == "system"
         border = CORAL if outgoing else (MUTED if system else CYAN)
         background = "#15282c" if outgoing else ("#111617" if system else PANEL_2)
-        self.setMaximumWidth(500)
-        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.setStyleSheet(f"QFrame{{background:{background};border:1px solid {border};}}")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(13, 9, 13, 8)
@@ -565,7 +576,9 @@ class MessageBubble(QFrame):
                 "SYSTEM // LOCAL" if system else f"MSG // {message.protocol}"
             )
         protocol = QLabel(code)
-        protocol.setStyleSheet(f"color:{border};font:600 7px 'Perfect DOS VGA 437 Win';border:0;")
+        protocol.setStyleSheet(
+            f"color:{border};font:600 {UI_SMALL_FONT_PX}px 'Perfect DOS VGA 437 Win';border:0;"
+        )
         sender_label = None
         if sender_name:
             sender_label = QLabel(sender_name)
@@ -592,7 +605,9 @@ class MessageBubble(QFrame):
         text.setStyleSheet(f"color:{TEXT};font-size:{message_font_size}px;border:0;")
         self.time_label = QLabel()
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.time_label.setStyleSheet(f"color:{MUTED};font:7px 'Perfect DOS VGA 437 Win';border:0;")
+        self.time_label.setStyleSheet(
+            f"color:{MUTED};font:{UI_SMALL_FONT_PX}px 'Perfect DOS VGA 437 Win';border:0;"
+        )
         self.time_text = message.time_label
         self.set_delivery_state(message.delivery_state)
         layout.addWidget(protocol)
@@ -670,13 +685,13 @@ class MessageRow(QWidget):
         )
         if message.direction == "system":
             layout.addStretch(1)
-            layout.addWidget(bubble)
+            layout.addWidget(bubble, 8)
             layout.addStretch(1)
         elif outgoing:
             layout.addStretch(1)
-            layout.addWidget(bubble)
+            layout.addWidget(bubble, 4)
         else:
-            layout.addWidget(bubble)
+            layout.addWidget(bubble, 4)
             layout.addStretch(1)
 
 
