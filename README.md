@@ -248,7 +248,7 @@ operations such as secure TLS/WebSocket exposure, updates, monitoring, storage,
 and backups; entering a custom address in fsociety does not create or administer
 the relay.
 
-Paste the moderation authority `npub` from the private admin application into
+Paste the moderation authority `npub` from an admin user into
 **Settings > Moderation admin key**. The client fetches the latest signed
 NIP-51 mute list from the configured general relays, verifies its signature and
 author, stores the targets locally, and filters matching user public keys and
