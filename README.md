@@ -29,15 +29,6 @@ ZIP, RAR, and other generic files are supported as encrypted attachments and
 are presented to recipients with an explicit save control rather than being
 opened automatically.
 
-An animated Neon Sunset Drive idle screen with rolling wireframe hills appears
-after five minutes without input. It is enabled by default, can be disabled in
-Settings, exits on the first keyboard or mouse input, and does not interrupt
-relay connections or background message synchronization.
-
-Large conversations use bounded keyset pagination: 100 recent messages load
-initially, 50 older messages load at a time, and no more than 250 message widgets
-remain rendered while the complete history stays in SQLite.
-
 For installation and day-to-day operation, see the
 [fsociety User Guide](docs/user_guide.md).
 
