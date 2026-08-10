@@ -12,7 +12,7 @@ from PyQt6.QtCore import QEvent, QMimeData, Qt
 from PyQt6.QtGui import QImage
 from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
-from PyQt6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton
+from PyQt6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton, QTextBrowser
 
 from fsociety_client.database import ClientDatabase
 from fsociety_client.identity import IdentityVault, RecoveryDialog
@@ -348,11 +348,11 @@ class ClientInteractionTests(unittest.TestCase):
         bubble = MessageBubble(message)
         labels = [label.text() for label in bubble.findChildren(QLabel)]
         buttons = [button.text() for button in bubble.findChildren(QPushButton)]
-        body = bubble.findChild(QLabel, "messageBody")
+        body = bubble.findChild(QTextBrowser, "messageBody")
         self.assertTrue(any("application/zip" in label for label in labels))
         self.assertIn("SAVE FILE AS…", buttons)
         self.assertIsNotNone(body)
-        self.assertNotIn("href=", body.text())
+        self.assertNotIn("href=", body.toHtml())
         bubble.close()
 
     def test_regular_chat_links_remain_clickable(self) -> None:
@@ -360,10 +360,27 @@ class ClientInteractionTests(unittest.TestCase):
             "zero", "Visit https://www.yandex.com or yandex.com"
         )
         bubble = MessageBubble(message)
-        body = bubble.findChild(QLabel, "messageBody")
+        body = bubble.findChild(QTextBrowser, "messageBody")
         self.assertIsNotNone(body)
-        self.assertEqual(body.text().count("href="), 2)
+        self.assertEqual(body.toHtml().count("href="), 2)
         bubble.close()
+
+    def test_long_unbroken_message_wraps_without_changing_copied_text(self) -> None:
+        invite = "fsociety-group1:" + "A" * 240
+        message = Message(1, "zero", "outgoing", invite, 1, "received", "NIP-17")
+        row = MessageRow(message)
+        row.resize(1000, 300)
+        row.show()
+        self.application.processEvents()
+
+        bubble = row.findChild(MessageBubble)
+        body = row.findChild(QTextBrowser, "messageBody")
+        self.assertIsNotNone(bubble)
+        self.assertIsNotNone(body)
+        self.assertAlmostEqual(bubble.width() / row.width(), 0.8, delta=0.02)
+        self.assertEqual(body.toPlainText(), invite)
+        self.assertGreater(body.document().size().height(), body.fontMetrics().height())
+        row.close()
 
     def test_large_history_keeps_a_bounded_message_widget_window(self) -> None:
         base = 1_800_000_000

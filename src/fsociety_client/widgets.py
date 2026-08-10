@@ -8,7 +8,17 @@ from pathlib import Path
 
 import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QImageReader, QMovie, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtGui import (
+    QColor,
+    QFont,
+    QImageReader,
+    QMovie,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QTextOption,
+)
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtWidgets import (
@@ -21,6 +31,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSlider,
     QSizePolicy,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -70,6 +81,43 @@ def linkify_message_text(value: str) -> str:
         cursor = match.end()
     output.append(html.escape(value[cursor:]))
     return "".join(output).replace("\n", "<br>")
+
+
+class WrappingMessageText(QTextBrowser):
+    """Rich message text that wraps long tokens without changing copied text."""
+
+    def __init__(self, rendered_html: str, font_size: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("messageBody")
+        self.setReadOnly(True)
+        self.setOpenExternalLinks(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.document().setDocumentMargin(0)
+        text_options = self.document().defaultTextOption()
+        text_options.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.document().setDefaultTextOption(text_options)
+        self.setStyleSheet(
+            f"QTextBrowser#messageBody{{color:{TEXT};background:transparent;"
+            f"font-size:{font_size}px;border:0;padding:0;}}"
+        )
+        self.setHtml(rendered_html)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        self.document().setTextWidth(max(1, width))
+        return math.ceil(self.document().size().height())
+
+    def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().resizeEvent(event)
+        self.document().setTextWidth(max(1, self.viewport().width()))
+        required_height = max(1, math.ceil(self.document().size().height()))
+        if self.height() != required_height:
+            self.setFixedHeight(required_height)
 
 
 def clear_layout(layout: QVBoxLayout) -> None:
@@ -596,13 +644,7 @@ class MessageBubble(QFrame):
             if message.attachment_path
             else linkify_message_text(message.content)
         )
-        text = QLabel(rendered_content)
-        text.setObjectName("messageBody")
-        text.setTextFormat(Qt.TextFormat.RichText)
-        text.setWordWrap(True)
-        text.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        text.setOpenExternalLinks(True)
-        text.setStyleSheet(f"color:{TEXT};font-size:{message_font_size}px;border:0;")
+        text = WrappingMessageText(rendered_content, message_font_size, self)
         self.time_label = QLabel()
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.time_label.setStyleSheet(
