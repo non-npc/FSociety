@@ -116,7 +116,7 @@ The uncompiled client requires **Python 3.12 or newer** and the packages in
 `requirements.txt`. A compiled fsociety executable already contains its Python
 runtime, so end users of a release build do not need to install Python.
 
-Download Python for Windows, macOS, or source-based installations from the
+Download Python for Windows or source-based installations from the
 [official Python downloads page](https://www.python.org/downloads/). On Windows,
 enable the installer's option to add Python to `PATH`, then confirm it works with
 `python --version`. On Linux, install Python 3 and pip using the distribution's
