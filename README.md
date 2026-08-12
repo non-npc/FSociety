@@ -222,7 +222,7 @@ custom `wss://` or `https://` address.
 
 ### Find or operate a Nostr relay
 
-- [Nostr.Watch relay directory](https://nostr.watch/relays/find) can be used to
+- [Nostr.Watch relay directory](https://nostr.watch/) can be used to
   discover public relays and compare their reported availability.
 - [NIP-11 Relay Information Document](https://github.com/nostr-protocol/nips/blob/master/11.md)
   explains the metadata a relay may publish, including supported NIPs, limits,
