@@ -1,6 +1,6 @@
 # FSociety secure messenger
 
-![Version: Open Beta v0.3.3](https://img.shields.io/badge/version-Open%20Beta%20v0.3.3-4debf3?style=for-the-badge&labelColor=11191b)
+![Version: Open Beta v0.3.4](https://img.shields.io/badge/version-Open%20Beta%20v0.3.4-4debf3?style=for-the-badge&labelColor=11191b)
 ![Windows supported](https://img.shields.io/badge/Windows-Supported-4debf3?style=for-the-badge&logo=windows&logoColor=white&labelColor=11191b)
 ![Linux supported](https://img.shields.io/badge/Linux-Supported-4debf3?style=for-the-badge&logo=linux&logoColor=white&labelColor=11191b)
 
@@ -31,6 +31,17 @@ opened automatically.
 
 For installation and day-to-day operation, see the
 [fsociety User Guide](docs/user_guide.md).
+
+## What's new in Open Beta v0.3.4
+
+- Drag one or several files onto an active message composer,
+  review the confirmation grid, add an optional caption, and queue them through
+  the existing encrypted Blossom attachment pipeline.
+- React to delivered direct and group messages from a compact emoji grid.
+- Toggle your own reactions, aggregate matching reactions into counts, and
+  retain failed reaction changes in a dedicated offline retry queue.
+- Preserve attachment captions across encryption, offline retry, download, and
+  recipient display.
 
 ## Screenshots
 

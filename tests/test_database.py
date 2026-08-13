@@ -60,8 +60,17 @@ class ClientDatabaseTests(unittest.TestCase):
         attachment = self.database.list_messages("zero")[-1]
         self.assertEqual(attachment.attachment_path, "photo.png")
         self.assertEqual(attachment.attachment_mime, "image/png")
-        conversation = next(item for item in self.database.list_conversations() if item.id == "zero")
+        conversation = next(
+            item for item in self.database.list_conversations() if item.id == "zero"
+        )
         self.assertEqual(conversation.last_message, "You shared an image")
+
+    def test_attachment_caption_is_persisted_for_offline_delivery(self) -> None:
+        self.database.queue_attachment(
+            "zero", "photo.png", "captioned photo", "night operation"
+        )
+        queued = self.database.pending_outbox()[-1]
+        self.assertEqual(queued["attachment_caption"], "night operation")
 
     def test_archive_attachments_use_portable_mime_types(self) -> None:
         zip_message = self.database.queue_attachment("zero", "backup.ZIP", "shared zip")
@@ -378,6 +387,126 @@ class ClientDatabaseTests(unittest.TestCase):
         rows = self.database.list_posts(followed_only=True)
         self.assertEqual(rows[0]["event_id"], post)
         self.assertEqual(rows[0]["reaction_count"], 1)
+
+    def test_message_reactions_aggregate_toggle_and_retry(self) -> None:
+        own = "aa" * 32
+        peer = "bb" * 32
+        message = self.database.queue_direct_message(peer, "react to this")
+        self.database.set_message_reference(message.id, "cc" * 32)
+
+        outbox_id = self.database.queue_message_reaction(
+            message.id, peer, own, "👍", True, [peer]
+        )
+        reactions = self.database.list_message_reactions(message.id)
+        self.assertEqual(reactions[0]["emoji"], "👍")
+        self.assertEqual(reactions[0]["reaction_count"], 1)
+        self.assertTrue(self.database.has_message_reaction(message.id, own, "👍"))
+        self.assertEqual(self.database.pending_reaction_outbox()[0]["id"], outbox_id)
+
+        self.database.mark_reaction_failed(outbox_id, "offline")
+        self.assertEqual(self.database.pending_reaction_outbox()[0]["id"], outbox_id)
+        self.database.mark_reaction_published(outbox_id, "dd" * 32)
+        self.assertEqual(self.database.pending_reaction_outbox(), [])
+
+        self.database.queue_message_reaction(
+            message.id, peer, own, "👍", False, [peer]
+        )
+        self.assertEqual(self.database.list_message_reactions(message.id), [])
+
+    def test_legacy_group_attachment_reference_matches_every_participant(self) -> None:
+        sender = "aa" * 32
+        recipient = "bb" * 32
+        group_id = "group:legacy-reactions"
+        sent_at = 1700000000
+        sender_database = ClientDatabase(
+            Path(self.temporary_directory.name, "legacy-sender.sqlite3")
+        )
+        recipient_database = ClientDatabase(
+            Path(self.temporary_directory.name, "legacy-recipient.sqlite3")
+        )
+        try:
+            sender_database.create_group(group_id, "Legacy", [sender, recipient], sender)
+            local = sender_database.queue_group_attachment(
+                group_id,
+                "photo.jpg",
+                "photo.jpg\nEncrypted Blossom attachment",
+                [recipient],
+                sender,
+                "alice",
+            )
+            sender_database.connection.execute(
+                "UPDATE messages SET sent_at = ?, delivery_state = 'relay-accepted' WHERE id = ?",
+                (sent_at, local.id),
+            )
+            sender_database.connection.commit()
+
+            recipient_database.create_group(
+                group_id, "Legacy", [sender, recipient], sender
+            )
+            self.assertTrue(
+                recipient_database.add_group_message(
+                    group_id,
+                    "Legacy",
+                    [sender, recipient],
+                    sender,
+                    "Downloaded, decrypted, and SHA-256 verified",
+                    "11" * 32,
+                    sent_at,
+                    "alice",
+                    "attachments/abcdef123456-photo.jpg",
+                    "image/jpeg",
+                )
+            )
+            remote = recipient_database.list_messages(group_id)[0]
+            sender_database.ensure_legacy_message_references(sender)
+            recipient_database.ensure_legacy_message_references(recipient)
+            self.assertEqual(
+                sender_database.message_reference(local.id),
+                recipient_database.message_reference(remote.id),
+            )
+        finally:
+            sender_database.close()
+            recipient_database.close()
+
+    def test_incoming_message_reaction_requires_conversation_participant(self) -> None:
+        own = "aa" * 32
+        peer = "bb" * 32
+        stranger = "dd" * 32
+        self.assertTrue(
+            self.database.add_incoming_message(
+                peer, "target", "ee" * 32, 1700000000, message_ref="cc" * 32
+            )
+        )
+        message = self.database.list_messages(peer)[0]
+        self.assertIsNone(
+            self.database.apply_message_reaction(
+                "11" * 32,
+                "cc" * 32,
+                stranger,
+                "🔥",
+                True,
+                1700000001,
+                peer,
+                own,
+            )
+        )
+        self.assertEqual(self.database.list_message_reactions(message.id), [])
+        self.assertEqual(
+            self.database.apply_message_reaction(
+                "22" * 32,
+                "cc" * 32,
+                peer,
+                "🔥",
+                True,
+                1700000002,
+                peer,
+                own,
+            ),
+            message.id,
+        )
+        self.assertEqual(
+            self.database.list_message_reactions(message.id)[0]["reaction_count"], 1
+        )
 
     def test_contacts_profiles_and_profile_targets_are_persistent(self) -> None:
         peer = "ab" * 32

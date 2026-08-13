@@ -8,7 +8,17 @@ from dataclasses import replace
 from pathlib import Path
 
 from PyQt6.QtCore import QMimeData, QPoint, QSize, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QCursor, QIcon, QImage, QKeyEvent, QPixmap
+from PyQt6.QtGui import (
+    QCloseEvent,
+    QCursor,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDropEvent,
+    QIcon,
+    QImage,
+    QKeyEvent,
+    QPixmap,
+)
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -49,6 +59,7 @@ from .identity import UnlockedIdentity, normalize_avatar
 from .idle_visualization import IdleVisualizationController
 from .moderation import ModerationSyncWorker
 from .models import Conversation
+from .reactions import MESSAGE_REACTION_EMOJIS, REACTION_PREFIX, decode_reaction
 from .resources import create_hud_icon
 from .transport import NostrTransport
 from .theme import CORAL, CYAN, LINE, MUTED, PANEL, TEXT, UI_SMALL_FONT_PX, VOID
@@ -446,7 +457,54 @@ class ConversationSidebar(QFrame):
 
 class MessageComposer(QTextEdit):
     image_pasted = pyqtSignal(object)
+    files_dropped = pyqtSignal(object)
     submit_requested = pyqtSignal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    @staticmethod
+    def local_files(source: QMimeData) -> list[Path]:
+        paths: list[Path] = []
+        seen: set[str] = set()
+        if not source.hasUrls():
+            return paths
+        for url in source.urls():
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            key = str(path.absolute()).casefold()
+            if key in seen or not path.is_file():
+                continue
+            seen.add(key)
+            paths.append(path)
+        return paths
+
+    def _set_drop_active(self, active: bool) -> None:
+        self.setProperty("dropActive", active)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self.isEnabled() and self.local_files(event.mimeData()):
+            self._set_drop_active(True)
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
+        self._set_drop_active(False)
+        event.accept()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        self._set_drop_active(False)
+        paths = self.local_files(event.mimeData())
+        if not paths:
+            event.ignore()
+            return
+        self.files_dropped.emit(paths)
+        event.acceptProposedAction()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -462,6 +520,38 @@ class MessageComposer(QTextEdit):
             self.image_pasted.emit(image if isinstance(image, QImage) else QImage(image))
             return
         super().insertFromMimeData(source)
+
+
+class AttachmentDropDialog(QDialog):
+    def __init__(self, paths: list[Path], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Confirm attachment drop")
+        self.setMinimumWidth(480)
+        layout = QVBoxLayout(self)
+        heading = QLabel(f"QUEUE {len(paths)} ENCRYPTED ATTACHMENT(S)")
+        heading.setObjectName("sectionCode")
+        layout.addWidget(heading)
+        files = QListWidget()
+        for path in paths:
+            try:
+                size = path.stat().st_size / 1024
+                files.addItem(f"{path.name}  ·  {size:.1f} KB")
+            except OSError:
+                files.addItem(f"{path.name}  ·  inaccessible")
+        files.setMaximumHeight(180)
+        layout.addWidget(files)
+        layout.addWidget(QLabel("Optional caption (applies to every dropped file)"))
+        self.caption = QLineEdit()
+        self.caption.setMaxLength(1000)
+        self.caption.setPlaceholderText("Add a caption")
+        layout.addWidget(self.caption)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Queue attachments")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
 
 class ProfileDialog(QDialog):
@@ -704,6 +794,7 @@ class ChatPane(QWidget):
         send_attachment=None,
         send_group=None,
         send_group_attachment=None,
+        send_reaction=None,
         view_profile=None,
         group_exit=None,
         delete_conversation=None,
@@ -718,6 +809,7 @@ class ChatPane(QWidget):
         self.send_attachment = send_attachment
         self.send_group = send_group
         self.send_group_attachment = send_group_attachment
+        self.send_reaction = send_reaction
         self.view_profile = view_profile
         self.group_exit = group_exit
         self.delete_conversation = delete_conversation
@@ -822,6 +914,7 @@ class ChatPane(QWidget):
         emotes.clicked.connect(self._show_emotes)
         self.input = MessageComposer()
         self.input.image_pasted.connect(self._paste_image)
+        self.input.files_dropped.connect(self._drop_files)
         self.input.submit_requested.connect(self._send)
         self.input.setPlaceholderText("Select a conversation")
         self.input.setFixedHeight(42)
@@ -841,8 +934,10 @@ class ChatPane(QWidget):
 
     def _style_composer(self) -> None:
         self.input.setStyleSheet(
-            "border:0;background:transparent;padding:9px 5px;"
+            "QTextEdit{border:0;background:transparent;padding:9px 5px;"
             f"font-size:{self.message_font_size}px;"
+            "}QTextEdit[dropActive=\"true\"]{border:1px dashed #4debf3;"
+            "background:#102326;}"
         )
 
     def apply_message_font_size(self) -> None:
@@ -939,6 +1034,28 @@ class ChatPane(QWidget):
                 return True
         return False
 
+    def refresh_message_reactions(self, message_id: int) -> bool:
+        row = self.message_rows.get(message_id)
+        if row is None:
+            return False
+        bubble = row.findChild(MessageBubble)
+        if bubble is None:
+            return False
+        stay_at_bottom = self.is_near_bottom()
+        scroll_value = self.scroll.verticalScrollBar().value()
+        bubble.set_reactions(
+            self.database.list_message_reactions(message_id), self.own_pubkey
+        )
+        bubble.updateGeometry()
+        row.updateGeometry()
+        if stay_at_bottom:
+            self._arm_bottom_scroll()
+        else:
+            QTimer.singleShot(
+                0, lambda: self.scroll.verticalScrollBar().setValue(scroll_value)
+            )
+        return True
+
     def _render_messages(
         self,
         messages,
@@ -1010,6 +1127,7 @@ class ChatPane(QWidget):
             bool(show_images),
             bool(show_videos),
             self.message_font_size,
+            self.database.list_message_reactions(message.id),
         )
         row.setToolTip("Right-click for message actions")
         row.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1114,6 +1232,63 @@ class ChatPane(QWidget):
 
     def _show_message_actions(self, message, global_position) -> None:
         menu = QMenu(self.window())
+        reaction_menu = menu.addMenu("React to message")
+        message_ref = self.database.message_reference(message.id)
+        picker = QWidget()
+        picker.setObjectName("reactionPicker")
+        picker_layout = QGridLayout(picker)
+        picker_layout.setContentsMargins(7, 7, 7, 7)
+        picker_layout.setHorizontalSpacing(5)
+        picker_layout.setVerticalSpacing(5)
+
+        def choose_reaction(emoji: str, active: bool) -> None:
+            reaction_menu.close()
+            menu.close()
+            if self.send_reaction is None or self.conversation is None:
+                return
+            conversation = self.conversation
+            QTimer.singleShot(
+                0,
+                lambda: self.send_reaction(
+                    message.id, conversation, emoji, active
+                ),
+            )
+
+        for index, emoji in enumerate(MESSAGE_REACTION_EMOJIS):
+            selected = self.database.has_message_reaction(
+                message.id, self.own_pubkey, emoji
+            )
+            button = QPushButton(emoji)
+            button.setFixedSize(42, 38)
+            button.setToolTip(
+                f"{'Remove' if selected else 'Add'} {emoji} reaction"
+            )
+            button.setEnabled(bool(message_ref) and message.direction != "system")
+            button.setStyleSheet(
+                "QPushButton{font-family:'Segoe UI Emoji';font-size:20px;"
+                f"color:{TEXT};background:"
+                + ("#392126" if selected else "#101b1e")
+                + ";border:1px solid "
+                + (CORAL if selected else LINE)
+                + ";padding:0;}QPushButton:hover{border:1px solid "
+                + CYAN
+                + ";background:#183035;}"
+            )
+            button.clicked.connect(
+                lambda checked=False, value=emoji, active=not selected: choose_reaction(
+                    value, active
+                )
+            )
+            picker_layout.addWidget(button, index // 4, index % 4)
+        picker_action = QWidgetAction(reaction_menu)
+        picker_action.setDefaultWidget(picker)
+        reaction_menu.addAction(picker_action)
+        if not message_ref:
+            reaction_menu.setToolTipsVisible(True)
+            reaction_menu.setToolTip(
+                "Reactions are available after a message has a stable relay reference."
+            )
+        menu.addSeparator()
         copy_action = menu.addAction("Copy message text")
         hide_action = menu.addAction("Hide message locally")
         selected = menu.exec(global_position)
@@ -1321,6 +1496,25 @@ class ChatPane(QWidget):
             return
         self._queue_attachment(Path(filename))
 
+    def _drop_files(self, paths: list[Path]) -> None:
+        if self.conversation is None:
+            QMessageBox.information(
+                self.window(), "No conversation", "Select a conversation before dropping files."
+            )
+            return
+        clean_paths = list(dict.fromkeys(path for path in paths if path.is_file()))[:20]
+        if not clean_paths:
+            QMessageBox.warning(
+                self.window(), "Unsupported drop", "The drop did not contain readable files."
+            )
+            return
+        dialog = AttachmentDropDialog(clean_paths, self.window())
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        caption = dialog.caption.text().strip()
+        for path in clean_paths:
+            self._queue_attachment(path, caption)
+
     def _paste_image(self, image: QImage) -> None:
         if self.conversation is None or image.isNull():
             return
@@ -1337,11 +1531,21 @@ class ChatPane(QWidget):
             return
         self._queue_attachment(path)
 
-    def _queue_attachment(self, path: Path) -> None:
+    def _queue_attachment(self, path: Path, caption: str = "") -> None:
         if self.conversation is None:
             return
+        try:
+            if not path.is_file():
+                raise OSError("The selected path is not a file.")
+            size = path.stat().st_size
+            if size <= 0:
+                raise OSError("Empty files cannot be attached.")
+            with path.open("rb"):
+                pass
+        except OSError as error:
+            QMessageBox.warning(self.window(), "Attachment unavailable", str(error))
+            return
         max_megabytes = int(self.database.get_setting("uploads.max_mb", "100"))
-        size = path.stat().st_size
         mime_type = guess_attachment_mime(path.name)
         if mime_type.startswith("video/"):
             video_limit = min(
@@ -1366,15 +1570,16 @@ class ChatPane(QWidget):
         with path.open("rb") as stream:
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
-        content = (
+        attachment_details = (
             f"📎 {path.name}\n"
             f"{size / 1024:.1f} KB · SHA-256 {digest.hexdigest()[:16]}…\n"
             "Encrypted Blossom attachment"
         )
+        content = f"{caption}\n{attachment_details}" if caption else attachment_details
         if self.conversation.kind == "group" and self.send_group_attachment is not None:
-            self.send_group_attachment(self.conversation, str(path), content)
+            self.send_group_attachment(self.conversation, str(path), content, caption)
         elif self.conversation.peer_pubkey and self.send_attachment is not None:
-            self.send_attachment(self.conversation.peer_pubkey, str(path), content)
+            self.send_attachment(self.conversation.peer_pubkey, str(path), content, caption)
         else:
             self.database.add_outgoing_message(self.conversation.id, content, protocol="BLOSSOM")
         self.on_message_sent(self.conversation.id)
@@ -1766,7 +1971,13 @@ class NetworkDashboard(QWidget):
             ).fetchone()[0]
         )
         self._set_card(self.messages_stat, str(message_count))
-        self._set_card(self.outbox_stat, str(len(self.database.pending_outbox())))
+        self._set_card(
+            self.outbox_stat,
+            str(
+                len(self.database.pending_outbox())
+                + len(self.database.pending_reaction_outbox())
+            ),
+        )
         self._set_card(self.groups_stat, str(group_count))
         self._refresh_network_stats()
 
@@ -1902,6 +2113,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.database = database
         self.identity = identity
+        if identity is not None:
+            self.database.ensure_legacy_message_references(
+                identity.keys.public_key().to_hex()
+            )
         self.closing = False
         self.database_closed = False
         self.profile_updater = profile_updater
@@ -1952,6 +2167,7 @@ class MainWindow(QMainWindow):
             send_attachment=self._send_attachment,
             send_group=self._send_group_message,
             send_group_attachment=self._send_group_attachment,
+            send_reaction=self._send_message_reaction,
             view_profile=self._view_profile,
             group_exit=self._leave_or_delete_group,
             delete_conversation=self._delete_direct_conversation,
@@ -2282,6 +2498,8 @@ class MainWindow(QMainWindow):
         self.transport.profile_failed.connect(self._profile_failed)
         self.transport.attachment_status.connect(self._attachment_status)
         self.transport.public_profile.connect(self._public_profile_received)
+        self.transport.reaction_published.connect(self._reaction_published)
+        self.transport.reaction_failed.connect(self._reaction_failed)
         self.transport.finished.connect(self._transport_finished)
         self.transport.start()
 
@@ -2328,12 +2546,14 @@ class MainWindow(QMainWindow):
                         conversation.display_name if conversation else "Encrypted group",
                         json.loads(str(item["recipients_json"])),
                         str(item["attachment_path"]),
+                        str(item["attachment_caption"] or ""),
                     )
                 elif item["message_type"] == "attachment" and item["attachment_path"]:
                     self.transport.send_attachment(
                         int(item["message_id"]),
                         str(item["recipient_pubkey"]),
                         str(item["attachment_path"]),
+                        str(item["attachment_caption"] or ""),
                     )
                 elif item["message_type"] == "group" and item["recipients_json"]:
                     import json
@@ -2356,6 +2576,32 @@ class MainWindow(QMainWindow):
                         str(item["recipient_pubkey"]),
                         str(item["content"]),
                     )
+        for item in self.database.pending_reaction_outbox():
+            self._publish_queued_reaction(item)
+
+    def _publish_queued_reaction(self, item: dict[str, object]) -> None:
+        if self.transport is None or not self.transport_connected:
+            return
+        group_id = str(item["group_id"] or "")
+        conversation = next(
+            (
+                row
+                for row in self.database.list_conversations()
+                if row.id == str(item["conversation_id"])
+            ),
+            None,
+        )
+        self.database.mark_reaction_sending(int(item["id"]))
+        self.transport.send_reaction(
+            int(item["id"]),
+            str(item["target_ref"]),
+            str(item["emoji"]),
+            bool(item["active"]),
+            int(item["created_at"]),
+            json.loads(str(item["recipients_json"])),
+            group_id,
+            conversation.display_name if conversation is not None else "Encrypted group",
+        )
 
     def _transport_failed(self, error: str) -> None:
         if self.closing:
@@ -2418,25 +2664,33 @@ class MainWindow(QMainWindow):
             self.database.mark_message_sending(message.id)
             self.transport.send_direct_message(message.id, peer_pubkey, content)
 
-    def _send_attachment(self, peer_pubkey: str, path: str, display_text: str) -> None:
+    def _send_attachment(
+        self, peer_pubkey: str, path: str, display_text: str, caption: str = ""
+    ) -> None:
         if self.database.is_user_blocked(peer_pubkey):
             QMessageBox.warning(
                 self, "User blocked", "Unblock this user from Contacts before sharing files."
             )
             return
-        message = self.database.queue_attachment(peer_pubkey, path, display_text)
+        message = self.database.queue_attachment(peer_pubkey, path, display_text, caption)
         if self.transport_connected and self.transport is not None:
             self.database.mark_message_sending(message.id)
-            self.transport.send_attachment(message.id, peer_pubkey, path)
+            self.transport.send_attachment(message.id, peer_pubkey, path, caption)
 
     def _send_group_attachment(
-        self, conversation: Conversation, path: str, display_text: str
+        self,
+        conversation: Conversation,
+        path: str,
+        display_text: str,
+        caption: str = "",
     ) -> None:
         if self.identity is None:
             return
         own = self.identity.keys.public_key().to_hex()
         members = [
-            member for member in self.database.group_members(conversation.id) if member != own
+            member
+            for member in self.database.group_members(conversation.id)
+            if member != own
         ]
         message = self.database.queue_group_attachment(
             conversation.id,
@@ -2445,12 +2699,62 @@ class MainWindow(QMainWindow):
             members,
             own,
             self.identity.record.username,
+            caption,
         )
         if self.transport_connected and self.transport is not None:
             self.database.mark_message_sending(message.id)
             self.transport.send_group_attachment(
-                message.id, conversation.id, conversation.display_name, members, path
+                message.id,
+                conversation.id,
+                conversation.display_name,
+                members,
+                path,
+                caption,
             )
+
+    def _send_message_reaction(
+        self, message_id: int, conversation: Conversation, emoji: str, active: bool
+    ) -> None:
+        if self.identity is None:
+            return
+        own = self.identity.keys.public_key().to_hex()
+        if conversation.kind == "group":
+            recipients = [
+                member
+                for member in self.database.group_members(conversation.id)
+                if member != own
+            ]
+            group_id = conversation.id
+        else:
+            recipients = [conversation.peer_pubkey] if conversation.peer_pubkey else []
+            group_id = ""
+        if not recipients:
+            QMessageBox.warning(self, "Reaction unavailable", "This chat has no recipient.")
+            return
+        try:
+            outbox_id = self.database.queue_message_reaction(
+                message_id,
+                conversation.id,
+                own,
+                emoji,
+                active,
+                [str(value) for value in recipients],
+                group_id,
+            )
+        except ValueError as error:
+            QMessageBox.information(self, "Reaction unavailable", str(error))
+            return
+        self.chat.refresh_message_reactions(message_id)
+        item = next(
+            (
+                row
+                for row in self.database.pending_reaction_outbox()
+                if int(row["id"]) == outbox_id
+            ),
+            None,
+        )
+        if item is not None:
+            self._publish_queued_reaction(item)
 
     def _new_group(self) -> None:
         if self.identity is None:
@@ -2706,7 +3010,9 @@ class MainWindow(QMainWindow):
                 message.id, conversation.id, conversation.display_name, members, content
             )
 
-    def _message_published(self, message_id: int, event_id: str, relays: str) -> None:
+    def _message_published(
+        self, message_id: int, event_id: str, relays: str, message_ref: str
+    ) -> None:
         if self.closing:
             return
         if message_id == 0:
@@ -2715,10 +3021,23 @@ class MainWindow(QMainWindow):
             self.network_status.setText(f"{label} ACCEPTED BY {relays}")
             return
         self.database.mark_message_published(message_id, event_id)
+        self.database.set_message_reference(message_id, message_ref)
         self._set_message_status(message_id, f"MESSAGE ACCEPTED BY {relays}")
         self.sidebar.refresh()
         if not self.chat.update_message_delivery_state(message_id, "relay-accepted"):
             self._refresh_current_conversation()
+
+    def _reaction_published(self, outbox_id: int, event_id: str, relays: str) -> None:
+        if self.closing or self.database_closed:
+            return
+        self.database.mark_reaction_published(outbox_id, event_id)
+        self.network_status.setText(f"REACTION ACCEPTED BY {relays}")
+
+    def _reaction_failed(self, outbox_id: int, error: str) -> None:
+        if self.closing or self.database_closed:
+            return
+        self.database.mark_reaction_failed(outbox_id, error)
+        self.network_status.setText(f"REACTION QUEUED FOR RETRY  ·  {error}")
 
     def _message_publish_failed(self, message_id: int, error: str) -> None:
         if self.closing:
@@ -2760,6 +3079,43 @@ class MainWindow(QMainWindow):
         # NIP-59 hides the real sender from the relay, so blocking must happen
         # after local decryption but before content or group controls are stored.
         if not self_copy and self.database.is_user_blocked(sender):
+            return
+        raw_content = str(payload.get("content") or "")
+        reaction = decode_reaction(raw_content)
+        if reaction is not None or raw_content.startswith(REACTION_PREFIX):
+            if reaction is None:
+                return
+            if payload.get("group_id"):
+                reaction_conversation_id = str(payload["group_id"])
+            elif self_copy:
+                peers = [
+                    str(value)
+                    for value in list(payload.get("recipients") or [])
+                    if str(value) and str(value) != own_pubkey
+                ]
+                if not peers:
+                    return
+                reaction_conversation_id = self.database.direct_conversation_id(peers[0]) or ""
+            else:
+                reaction_conversation_id = self.database.direct_conversation_id(sender) or ""
+            if not reaction_conversation_id:
+                return
+            changed_message_id = self.database.apply_message_reaction(
+                str(payload["message_ref"]),
+                str(reaction["target"]),
+                sender,
+                str(reaction["emoji"]),
+                bool(reaction["active"]),
+                int(payload["sent_at"]),
+                reaction_conversation_id,
+                own_pubkey,
+            )
+            if (
+                changed_message_id is not None
+                and self.chat.conversation is not None
+                and self.chat.conversation.id == reaction_conversation_id
+            ):
+                self.chat.refresh_message_reactions(changed_message_id)
             return
         affected_conversation_id = ""
         if payload.get("group_id"):
@@ -2810,6 +3166,7 @@ class MainWindow(QMainWindow):
                 str(payload.get("sender_name") or ""),
                 str(payload.get("attachment_path") or ""),
                 str(payload.get("attachment_mime") or ""),
+                str(payload.get("message_ref") or ""),
                 system=bool(control),
                 recovered_outgoing=self_copy,
             )
@@ -2837,6 +3194,7 @@ class MainWindow(QMainWindow):
                     int(payload["sent_at"]),
                     str(payload.get("attachment_path") or ""),
                     str(payload.get("attachment_mime") or ""),
+                    str(payload.get("message_ref") or ""),
                 )
             else:
                 affected_conversation_id = self.database.ensure_direct_conversation(
@@ -2849,6 +3207,7 @@ class MainWindow(QMainWindow):
                     int(payload["sent_at"]),
                     str(payload.get("attachment_path") or ""),
                     str(payload.get("attachment_mime") or ""),
+                    str(payload.get("message_ref") or ""),
                 )
         if inserted:
             is_current_conversation = (

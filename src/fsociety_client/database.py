@@ -3,13 +3,16 @@ from __future__ import annotations
 import sqlite3
 import time
 import json
+import hashlib
+import re
 from pathlib import Path
 
 from .attachment_types import guess_attachment_mime
 from .models import Conversation, Message
+from .reactions import normalize_reaction_emoji
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 class ClientDatabase:
@@ -51,6 +54,7 @@ class ClientDatabase:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
                 event_id TEXT,
+                message_ref TEXT NOT NULL DEFAULT '',
                 author_pubkey TEXT,
                 author_name TEXT NOT NULL DEFAULT '',
                 attachment_path TEXT NOT NULL DEFAULT '',
@@ -72,6 +76,7 @@ class ClientDatabase:
                 content TEXT NOT NULL,
                 message_type TEXT NOT NULL DEFAULT 'text',
                 attachment_path TEXT,
+                attachment_caption TEXT NOT NULL DEFAULT '',
                 recipients_json TEXT,
                 group_id TEXT,
                 attempts INTEGER NOT NULL DEFAULT 0,
@@ -142,6 +147,28 @@ class ClientDatabase:
                 content TEXT NOT NULL,
                 created_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS message_reactions (
+                target_ref TEXT NOT NULL,
+                author_pubkey TEXT NOT NULL,
+                emoji TEXT NOT NULL,
+                active INTEGER NOT NULL CHECK (active IN (0, 1)),
+                event_id TEXT NOT NULL UNIQUE,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(target_ref, author_pubkey, emoji)
+            );
+            CREATE TABLE IF NOT EXISTS reaction_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_ref TEXT NOT NULL,
+                conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                emoji TEXT NOT NULL,
+                active INTEGER NOT NULL CHECK (active IN (0, 1)),
+                author_pubkey TEXT NOT NULL,
+                recipients_json TEXT NOT NULL,
+                group_id TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                last_error TEXT NOT NULL DEFAULT ''
+            );
             CREATE TABLE IF NOT EXISTS follows (
                 pubkey TEXT PRIMARY KEY,
                 followed_at INTEGER NOT NULL
@@ -176,6 +203,10 @@ class ClientDatabase:
         }
         if "event_id" not in message_columns:
             self.connection.execute("ALTER TABLE messages ADD COLUMN event_id TEXT")
+        if "message_ref" not in message_columns:
+            self.connection.execute(
+                "ALTER TABLE messages ADD COLUMN message_ref TEXT NOT NULL DEFAULT ''"
+            )
         if "author_pubkey" not in message_columns:
             self.connection.execute("ALTER TABLE messages ADD COLUMN author_pubkey TEXT")
         if "author_name" not in message_columns:
@@ -198,6 +229,10 @@ class ClientDatabase:
             """CREATE UNIQUE INDEX IF NOT EXISTS messages_event_id
                ON messages(event_id) WHERE event_id IS NOT NULL"""
         )
+        self.connection.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS messages_message_ref
+               ON messages(message_ref) WHERE message_ref <> ''"""
+        )
         outbox_columns = {
             row[1] for row in self.connection.execute("PRAGMA table_info(outbox)").fetchall()
         }
@@ -207,6 +242,10 @@ class ClientDatabase:
             )
         if "attachment_path" not in outbox_columns:
             self.connection.execute("ALTER TABLE outbox ADD COLUMN attachment_path TEXT")
+        if "attachment_caption" not in outbox_columns:
+            self.connection.execute(
+                "ALTER TABLE outbox ADD COLUMN attachment_caption TEXT NOT NULL DEFAULT ''"
+            )
         if "recipients_json" not in outbox_columns:
             self.connection.execute("ALTER TABLE outbox ADD COLUMN recipients_json TEXT")
         if "group_id" not in outbox_columns:
@@ -281,6 +320,9 @@ class ClientDatabase:
         self.connection.execute(
             "UPDATE outbox SET status = 'queued' WHERE status = 'sending'"
         )
+        self.connection.execute(
+            "UPDATE reaction_outbox SET status = 'queued' WHERE status = 'sending'"
+        )
         self._hide_legacy_sender_attachment_duplicates()
         self.connection.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (10, ?)",
@@ -288,6 +330,10 @@ class ClientDatabase:
         )
         self.connection.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (11, ?)",
+            (int(time.time()),),
+        )
+        self.connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (12, ?)",
             (int(time.time()),),
         )
         self.connection.commit()
@@ -669,6 +715,13 @@ class ClientDatabase:
         self.connection.commit()
         return peer_pubkey
 
+    def direct_conversation_id(self, peer_pubkey: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT id FROM conversations WHERE peer_pubkey = ? AND kind = 'direct' LIMIT 1",
+            (peer_pubkey,),
+        ).fetchone()
+        return str(row["id"]) if row is not None else None
+
     def hide_direct_conversation_locally(self, conversation_id: str) -> bool:
         """Hide a direct chat and its history while retaining relay tombstones."""
         row = self.connection.execute(
@@ -771,12 +824,268 @@ class ClientDatabase:
     def pending_outbox(self) -> list[dict[str, object]]:
         rows = self.connection.execute(
             """SELECT id, message_id, recipient_pubkey, content, attempts,
-                      message_type, attachment_path, recipients_json, group_id
+                      message_type, attachment_path, attachment_caption,
+                      recipients_json, group_id
                FROM outbox WHERE status IN ('queued', 'failed') ORDER BY id"""
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def queue_attachment(self, peer_pubkey: str, path: str, display_text: str) -> Message:
+    def set_message_reference(self, message_id: int, message_ref: str) -> None:
+        clean_ref = message_ref.strip().lower()
+        if len(clean_ref) != 64 or any(
+            character not in "0123456789abcdef" for character in clean_ref
+        ):
+            return
+        with self.connection:
+            self.connection.execute(
+                "UPDATE messages SET message_ref = ? WHERE id = ?",
+                (clean_ref, message_id),
+            )
+
+    def ensure_legacy_message_references(self, own_pubkey: str) -> int:
+        """Backfill deterministic references for messages stored before schema v12."""
+        if len(own_pubkey) != 64:
+            return 0
+        rows = self.connection.execute(
+            """SELECT m.id, m.direction, m.content, m.sent_at, m.author_pubkey,
+                      m.attachment_path, c.id AS conversation_id, c.kind, c.peer_pubkey
+               FROM messages m JOIN conversations c ON c.id = m.conversation_id
+               WHERE m.message_ref = '' AND m.hidden_local = 0
+                 AND m.direction != 'system'
+                 AND m.delivery_state IN ('relay-accepted', 'received')"""
+        ).fetchall()
+        updated = 0
+        with self.connection:
+            for row in rows:
+                if row["kind"] == "direct":
+                    peer = str(row["peer_pubkey"] or "")
+                    if len(peer) != 64:
+                        continue
+                    conversation_key = "direct:" + ":".join(sorted((own_pubkey, peer)))
+                else:
+                    conversation_key = str(row["conversation_id"])
+                author = str(row["author_pubkey"] or "")
+                if not author and row["direction"] == "outgoing":
+                    author = own_pubkey
+                if len(author) != 64:
+                    continue
+                attachment_path = str(row["attachment_path"] or "")
+                if attachment_path:
+                    basename = Path(attachment_path).name
+                    payload_key = "attachment:" + re.sub(
+                        r"^[0-9a-fA-F]{12}-", "", basename
+                    )
+                else:
+                    payload_key = "text:" + str(row["content"])
+                material = json.dumps(
+                    {
+                        "v": 1,
+                        "conversation": conversation_key,
+                        "author": author,
+                        "sent_at": int(row["sent_at"]),
+                        "payload": payload_key,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                reference = hashlib.sha256(b"fsociety-legacy-message\0" + material).hexdigest()
+                try:
+                    self.connection.execute(
+                        "UPDATE messages SET message_ref = ? WHERE id = ?",
+                        (reference, int(row["id"])),
+                    )
+                    updated += 1
+                except sqlite3.IntegrityError:
+                    # Identical legacy rows represent the same logical relay message.
+                    continue
+        return updated
+
+    def message_reference(self, message_id: int) -> str:
+        row = self.connection.execute(
+            "SELECT message_ref FROM messages WHERE id = ? AND hidden_local = 0",
+            (message_id,),
+        ).fetchone()
+        return str(row["message_ref"] or "") if row is not None else ""
+
+    def list_message_reactions(self, message_id: int) -> list[dict[str, object]]:
+        target_ref = self.message_reference(message_id)
+        if not target_ref:
+            return []
+        rows = self.connection.execute(
+            """SELECT emoji, COUNT(*) AS reaction_count,
+                      GROUP_CONCAT(author_pubkey) AS authors
+               FROM message_reactions
+               WHERE target_ref = ? AND active = 1
+               GROUP BY emoji ORDER BY MIN(created_at), emoji""",
+            (target_ref,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def has_message_reaction(self, message_id: int, author_pubkey: str, emoji: str) -> bool:
+        target_ref = self.message_reference(message_id)
+        if not target_ref:
+            return False
+        row = self.connection.execute(
+            """SELECT active FROM message_reactions
+               WHERE target_ref = ? AND author_pubkey = ? AND emoji = ?""",
+            (target_ref, author_pubkey, emoji),
+        ).fetchone()
+        return row is not None and bool(row["active"])
+
+    def queue_message_reaction(
+        self,
+        message_id: int,
+        conversation_id: str,
+        author_pubkey: str,
+        emoji: str,
+        active: bool,
+        recipients: list[str],
+        group_id: str = "",
+    ) -> int:
+        target_ref = self.message_reference(message_id)
+        if not target_ref:
+            raise ValueError("This message has no stable relay reference yet.")
+        emoji = normalize_reaction_emoji(emoji)
+        if not emoji:
+            raise ValueError("Unsupported message reaction.")
+        previous = self.connection.execute(
+            """SELECT created_at FROM message_reactions
+               WHERE target_ref = ? AND author_pubkey = ? AND emoji = ?""",
+            (target_ref, author_pubkey, emoji),
+        ).fetchone()
+        created_at = max(
+            int(time.time()),
+            (int(previous["created_at"]) + 1) if previous is not None else 0,
+        )
+        with self.connection:
+            cursor = self.connection.execute(
+                """INSERT INTO reaction_outbox
+                   (target_ref, conversation_id, emoji, active, author_pubkey,
+                    recipients_json, group_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    target_ref,
+                    conversation_id,
+                    emoji,
+                    int(active),
+                    author_pubkey,
+                    json.dumps(list(dict.fromkeys(recipients))),
+                    group_id,
+                    created_at,
+                ),
+            )
+            outbox_id = int(cursor.lastrowid)
+            self._upsert_message_reaction(
+                f"local:{outbox_id}", target_ref, author_pubkey, emoji, active, created_at
+            )
+        return outbox_id
+
+    def pending_reaction_outbox(self) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """SELECT id, target_ref, conversation_id, emoji, active, author_pubkey,
+                      recipients_json, group_id, created_at
+               FROM reaction_outbox WHERE status IN ('queued', 'failed') ORDER BY id"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_reaction_sending(self, outbox_id: int) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE reaction_outbox SET status = 'sending' WHERE id = ?", (outbox_id,)
+            )
+
+    def mark_reaction_published(self, outbox_id: int, event_id: str) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE message_reactions SET event_id = ? WHERE event_id = ?",
+                (event_id, f"local:{outbox_id}"),
+            )
+            self.connection.execute("DELETE FROM reaction_outbox WHERE id = ?", (outbox_id,))
+
+    def mark_reaction_failed(self, outbox_id: int, error: str) -> None:
+        with self.connection:
+            self.connection.execute(
+                "UPDATE reaction_outbox SET status = 'failed', last_error = ? WHERE id = ?",
+                (error, outbox_id),
+            )
+
+    def apply_message_reaction(
+        self,
+        event_id: str,
+        target_ref: str,
+        author_pubkey: str,
+        emoji: str,
+        active: bool,
+        created_at: int,
+        conversation_id: str,
+        own_pubkey: str,
+    ) -> int | None:
+        emoji = normalize_reaction_emoji(emoji)
+        if not emoji:
+            return None
+        target = self.connection.execute(
+            """SELECT m.id, c.id AS conversation_id, c.kind, c.peer_pubkey
+               FROM messages m JOIN conversations c ON c.id = m.conversation_id
+               WHERE m.message_ref = ? AND m.hidden_local = 0""",
+            (target_ref,),
+        ).fetchone()
+        if target is None or str(target["conversation_id"]) != conversation_id:
+            return None
+        if target["kind"] == "direct":
+            allowed = {str(target["peer_pubkey"] or ""), own_pubkey}
+            if author_pubkey not in allowed:
+                return None
+        elif author_pubkey not in set(self.group_members(conversation_id)):
+            return None
+        with self.connection:
+            changed = self._upsert_message_reaction(
+                event_id,
+                target_ref,
+                author_pubkey,
+                emoji,
+                active,
+                int(created_at),
+            )
+        return int(target["id"]) if changed else None
+
+    def _upsert_message_reaction(
+        self,
+        event_id: str,
+        target_ref: str,
+        author_pubkey: str,
+        emoji: str,
+        active: bool,
+        created_at: int,
+    ) -> bool:
+        existing = self.connection.execute(
+            """SELECT event_id, active, created_at FROM message_reactions
+               WHERE target_ref = ? AND author_pubkey = ? AND emoji = ?""",
+            (target_ref, author_pubkey, emoji),
+        ).fetchone()
+        if existing is not None and (
+            int(existing["created_at"]) > created_at
+            or (
+                int(existing["created_at"]) == created_at
+                and str(existing["event_id"]) >= event_id
+            )
+        ):
+            return False
+        self.connection.execute(
+            """INSERT INTO message_reactions
+               (target_ref, author_pubkey, emoji, active, event_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(target_ref, author_pubkey, emoji) DO UPDATE SET
+                   active = excluded.active,
+                   event_id = excluded.event_id,
+                   created_at = excluded.created_at""",
+            (target_ref, author_pubkey, emoji, int(active), event_id, created_at),
+        )
+        return existing is None or bool(existing["active"]) != active
+
+    def queue_attachment(
+        self, peer_pubkey: str, path: str, display_text: str, caption: str = ""
+    ) -> Message:
         conversation_id = self.ensure_direct_conversation(peer_pubkey)
         message = self.add_outgoing_message(
             conversation_id, display_text, protocol="BLOSSOM+NIP-17"
@@ -788,9 +1097,10 @@ class ClientDatabase:
         )
         self.connection.execute(
             """INSERT INTO outbox
-               (message_id, recipient_pubkey, content, message_type, attachment_path)
-               VALUES (?, ?, ?, 'attachment', ?)""",
-            (message.id, peer_pubkey, display_text, path),
+               (message_id, recipient_pubkey, content, message_type, attachment_path,
+                attachment_caption)
+               VALUES (?, ?, ?, 'attachment', ?, ?)""",
+            (message.id, peer_pubkey, display_text, path, caption.strip()),
         )
         self.connection.commit()
         return message
@@ -909,6 +1219,7 @@ class ClientDatabase:
         members: list[str],
         sender_pubkey: str,
         sender_name: str,
+        caption: str = "",
     ) -> Message:
         message = self.add_outgoing_message(
             group_id, display_text, protocol="BLOSSOM+NIP-17 GROUP"
@@ -922,9 +1233,16 @@ class ClientDatabase:
         self.connection.execute(
             """INSERT INTO outbox
                (message_id, recipient_pubkey, content, message_type, attachment_path,
-                recipients_json, group_id)
-               VALUES (?, '', ?, 'group_attachment', ?, ?, ?)""",
-            (message.id, display_text, path, json.dumps(members), group_id),
+                attachment_caption, recipients_json, group_id)
+               VALUES (?, '', ?, 'group_attachment', ?, ?, ?, ?)""",
+            (
+                message.id,
+                display_text,
+                path,
+                caption.strip(),
+                json.dumps(members),
+                group_id,
+            ),
         )
         self.connection.commit()
         return message
@@ -941,6 +1259,7 @@ class ClientDatabase:
         sender_name: str = "",
         attachment_path: str = "",
         attachment_mime: str = "",
+        message_ref: str = "",
         system: bool = False,
         recovered_outgoing: bool = False,
     ) -> bool:
@@ -968,9 +1287,9 @@ class ClientDatabase:
                 self.connection.execute(
                     """INSERT INTO messages
                        (conversation_id, event_id, author_pubkey, author_name,
-                        attachment_path, attachment_mime, direction, content,
+                        attachment_path, attachment_mime, message_ref, direction, content,
                        sent_at, delivery_state, protocol)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NIP-17 GROUP')""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NIP-17 GROUP')""",
                     (
                         group_id,
                         event_id,
@@ -978,6 +1297,7 @@ class ClientDatabase:
                         sender_name.strip(),
                         attachment_path,
                         attachment_mime,
+                        message_ref,
                         direction,
                         content,
                         sent_at,
@@ -1065,6 +1385,7 @@ class ClientDatabase:
         sent_at: int,
         attachment_path: str = "",
         attachment_mime: str = "",
+        message_ref: str = "",
     ) -> bool:
         if self.is_user_blocked(sender_pubkey):
             return False
@@ -1079,15 +1400,16 @@ class ClientDatabase:
                 self.connection.execute(
                     """INSERT INTO messages
                        (conversation_id, event_id, author_pubkey, attachment_path,
-                        attachment_mime, hidden_local, direction, content, sent_at,
+                        attachment_mime, message_ref, hidden_local, direction, content, sent_at,
                         delivery_state, protocol)
-                       VALUES (?, ?, ?, ?, ?, ?, 'incoming', ?, ?, 'received', 'NIP-17')""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'incoming', ?, ?, 'received', 'NIP-17')""",
                     (
                         conversation_id,
                         event_id,
                         sender_pubkey,
                         attachment_path,
                         attachment_mime,
+                        message_ref,
                         1 if keep_hidden else 0,
                         content,
                         sent_at,
@@ -1116,6 +1438,7 @@ class ClientDatabase:
         sent_at: int,
         attachment_path: str = "",
         attachment_mime: str = "",
+        message_ref: str = "",
     ) -> bool:
         """Restore a sender inbox copy without duplicating a live local send."""
         conversation_id = self.ensure_direct_conversation(peer_pubkey, reveal=False)
@@ -1129,9 +1452,9 @@ class ClientDatabase:
                 self.connection.execute(
                     """INSERT INTO messages
                        (conversation_id, event_id, author_pubkey, attachment_path,
-                        attachment_mime, direction, content, sent_at,
+                        attachment_mime, message_ref, direction, content, sent_at,
                         delivery_state, protocol)
-                       VALUES (?, ?, ?, ?, ?, 'outgoing', ?, ?,
+                       VALUES (?, ?, ?, ?, ?, ?, 'outgoing', ?, ?,
                                'relay-accepted', ?)""",
                     (
                         conversation_id,
@@ -1139,6 +1462,7 @@ class ClientDatabase:
                         sender_pubkey,
                         attachment_path,
                         attachment_mime,
+                        message_ref,
                         content,
                         sent_at,
                         protocol,

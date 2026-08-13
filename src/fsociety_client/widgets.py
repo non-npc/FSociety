@@ -596,6 +596,8 @@ class MessageBubble(QFrame):
         show_images: bool = True,
         show_videos: bool = True,
         message_font_size: int = 18,
+        reactions: list[dict[str, object]] | None = None,
+        own_pubkey: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -683,7 +685,50 @@ class MessageBubble(QFrame):
                 FileAttachment(message.attachment_path, message.attachment_mime, self)
             )
         layout.addWidget(text)
+        self.reaction_strip = QWidget(self)
+        self.reaction_row = QHBoxLayout(self.reaction_strip)
+        self.reaction_row.setContentsMargins(0, 0, 0, 0)
+        self.reaction_row.setSpacing(5)
+        layout.addWidget(self.reaction_strip)
+        self.set_reactions(reactions or [], own_pubkey)
         layout.addWidget(self.time_label)
+
+    def set_reactions(
+        self, reactions: list[dict[str, object]], own_pubkey: str = ""
+    ) -> None:
+        while self.reaction_row.count():
+            item = self.reaction_row.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+        for reaction in reactions:
+            emoji = str(reaction["emoji"])
+            count = int(reaction["reaction_count"])
+            authors = [
+                value
+                for value in str(reaction.get("authors") or "").split(",")
+                if value
+            ]
+            chip = QLabel(emoji if count == 1 else f"{emoji} {count}")
+            selected = own_pubkey in authors
+            chip.setStyleSheet(
+                "border:1px solid "
+                + (CORAL if selected else LINE)
+                + ";border-radius:8px;padding:2px 7px;background:"
+                + ("#392126" if selected else "#0b1517")
+                + f";color:{TEXT};font-size:14px;"
+            )
+            chip.setToolTip(
+                "Reacted: "
+                + ", ".join(
+                    "you" if author == own_pubkey else f"npub:{author[:12]}…"
+                    for author in authors
+                )
+            )
+            self.reaction_row.addWidget(chip)
+        self.reaction_row.addStretch(1)
+        self.reaction_strip.setVisible(bool(reactions))
 
     def set_delivery_state(self, state: str) -> None:
         labels = {
@@ -708,6 +753,7 @@ class MessageRow(QWidget):
         show_images: bool = True,
         show_videos: bool = True,
         message_font_size: int = 18,
+        reactions: list[dict[str, object]] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -724,6 +770,8 @@ class MessageRow(QWidget):
             show_images,
             show_videos,
             message_font_size,
+            reactions,
+            own_pubkey,
         )
         if message.direction == "system":
             layout.addStretch(1)

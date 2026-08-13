@@ -38,16 +38,25 @@ from PyQt6.QtGui import QImageReader
 
 from .attachment_types import guess_attachment_mime
 from .identity import UnlockedIdentity
+from .reactions import encode_reaction
+
+
+def create_direct_rumor(
+    keys,
+    recipient: PublicKey,
+    content: str,
+    created_at: int | None = None,
+):
+    builder = EventBuilder(Kind(14), content).tags([Tag.public_key(recipient)])
+    if created_at is not None:
+        builder = builder.custom_created_at(Timestamp.from_secs(created_at))
+    return builder.finalize_unsigned(keys.public_key()).ensure_id()
 
 
 def create_direct_gift_wrap(
     keys, recipient: PublicKey, content: str, wrap_for: PublicKey | None = None
 ):
-    rumor = (
-        EventBuilder(Kind(14), content)
-        .tags([Tag.public_key(recipient)])
-        .finalize_unsigned(keys.public_key())
-    )
+    rumor = create_direct_rumor(keys, recipient, content)
     return nip59_make_gift_wrap(keys, wrap_for or recipient, rumor)
 
 
@@ -78,6 +87,7 @@ def unwrap_direct_gift(keys, event) -> dict[str, object]:
         "sender": gift.sender().to_hex(),
         "content": rumor.content(),
         "event_id": event.id().to_hex(),
+        "message_ref": rumor.ensure_id().id().to_hex(),
         "sent_at": rumor.created_at().as_secs(),
         "recipients": recipients,
         "subject": subject,
@@ -93,12 +103,16 @@ def create_group_rumor(
     name: str,
     content: str,
     sender_name: str = "",
+    created_at: int | None = None,
 ):
     tags = [Tag.public_key(member) for member in members]
     tags.extend([Tag.custom("h", [group_id]), Tag.custom("subject", [name])])
     if sender_name.strip():
         tags.append(Tag.custom("name", [sender_name.strip()]))
-    return EventBuilder(Kind(14), content).tags(tags).finalize_unsigned(keys.public_key())
+    builder = EventBuilder(Kind(14), content).tags(tags)
+    if created_at is not None:
+        builder = builder.custom_created_at(Timestamp.from_secs(created_at))
+    return builder.finalize_unsigned(keys.public_key()).ensure_id()
 
 
 def encrypt_attachment(data: bytes, name: str) -> tuple[bytes, bytes]:
@@ -164,12 +178,14 @@ class NostrTransport(QThread):
     connection_failed = pyqtSignal(str)
     relay_status = pyqtSignal(str, str)
     direct_message = pyqtSignal(object)
-    message_published = pyqtSignal(int, str, str)
+    message_published = pyqtSignal(int, str, str, str)
     message_failed = pyqtSignal(int, str)
     profile_published = pyqtSignal(str, str, str)
     profile_failed = pyqtSignal(str)
     attachment_status = pyqtSignal(int, str)
     public_profile = pyqtSignal(object)
+    reaction_published = pyqtSignal(int, str, str)
+    reaction_failed = pyqtSignal(int, str)
 
     def __init__(
         self,
@@ -216,8 +232,10 @@ class NostrTransport(QThread):
     def send_direct_message(self, message_id: int, recipient: str, content: str) -> None:
         self.commands.put(("send_dm", (message_id, recipient, content)))
 
-    def send_attachment(self, message_id: int, recipient: str, path: str) -> None:
-        self.commands.put(("send_attachment", (message_id, recipient, path)))
+    def send_attachment(
+        self, message_id: int, recipient: str, path: str, caption: str = ""
+    ) -> None:
+        self.commands.put(("send_attachment", (message_id, recipient, path, caption)))
 
     def send_group(
         self, message_id: int, group_id: str, name: str, members: list[str], content: str
@@ -225,10 +243,43 @@ class NostrTransport(QThread):
         self.commands.put(("send_group", (message_id, group_id, name, members, content)))
 
     def send_group_attachment(
-        self, message_id: int, group_id: str, name: str, members: list[str], path: str
+        self,
+        message_id: int,
+        group_id: str,
+        name: str,
+        members: list[str],
+        path: str,
+        caption: str = "",
     ) -> None:
         self.commands.put(
-            ("send_group_attachment", (message_id, group_id, name, members, path))
+            ("send_group_attachment", (message_id, group_id, name, members, path, caption))
+        )
+
+    def send_reaction(
+        self,
+        outbox_id: int,
+        target_ref: str,
+        emoji: str,
+        active: bool,
+        created_at: int,
+        recipients: list[str],
+        group_id: str = "",
+        group_name: str = "",
+    ) -> None:
+        self.commands.put(
+            (
+                "send_reaction",
+                (
+                    outbox_id,
+                    target_ref,
+                    emoji,
+                    active,
+                    created_at,
+                    recipients,
+                    group_id,
+                    group_name,
+                ),
+            )
         )
 
     def refresh_profiles(self, pubkeys: list[str]) -> None:
@@ -316,7 +367,11 @@ class NostrTransport(QThread):
                             )
                         elif command == "send_attachment":
                             await self._send_attachment(
-                                client, int(values[0]), str(values[1]), str(values[2])
+                                client,
+                                int(values[0]),
+                                str(values[1]),
+                                str(values[2]),
+                                str(values[3]),
                             )
                         elif command == "send_group":
                             await self._send_group(
@@ -327,6 +382,18 @@ class NostrTransport(QThread):
                                 list(values[3]),
                                 str(values[4]),
                             )
+                        elif command == "send_reaction":
+                            await self._send_reaction(
+                                client,
+                                int(values[0]),
+                                str(values[1]),
+                                str(values[2]),
+                                bool(values[3]),
+                                int(values[4]),
+                                list(values[5]),
+                                str(values[6]),
+                                str(values[7]),
+                            )
                         elif command == "send_group_attachment":
                             await self._send_group_attachment(
                                 client,
@@ -335,6 +402,7 @@ class NostrTransport(QThread):
                                 str(values[2]),
                                 list(values[3]),
                                 str(values[4]),
+                                str(values[5]),
                             )
                         elif command == "profiles":
                             await self._fetch_profiles(client, list(values[0]))
@@ -386,18 +454,16 @@ class NostrTransport(QThread):
     ) -> None:
         try:
             recipient = PublicKey.parse(recipient_value)
-            gift_wrap = create_direct_gift_wrap(self.identity.keys, recipient, content)
+            rumor = create_direct_rumor(self.identity.keys, recipient, content)
+            gift_wrap = nip59_make_gift_wrap(self.identity.keys, recipient, rumor)
             recipient_relays = await self._recipient_inbox_relays(client, recipient)
             successful = await self._publish_event(
                 client,
                 gift_wrap,
                 SendEventTarget.to([RelayUrl.parse(value) for value in recipient_relays]),
             )
-            self_copy = create_direct_gift_wrap(
-                self.identity.keys,
-                recipient,
-                content,
-                wrap_for=self.identity.keys.public_key(),
+            self_copy = nip59_make_gift_wrap(
+                self.identity.keys, self.identity.keys.public_key(), rumor
             )
             try:
                 await self._publish_event(
@@ -410,29 +476,32 @@ class NostrTransport(QThread):
             except Exception:
                 pass
             self.message_published.emit(
-                message_id, gift_wrap.id().to_hex(), successful
+                message_id, gift_wrap.id().to_hex(), successful, rumor.id().to_hex()
             )
         except Exception as error:
             self.message_failed.emit(message_id, str(error))
 
     async def _send_attachment(
-        self, client: Client, message_id: int, recipient_value: str, filename: str
+        self,
+        client: Client,
+        message_id: int,
+        recipient_value: str,
+        filename: str,
+        caption: str = "",
     ) -> None:
         try:
-            content = await self._prepare_attachment(Path(filename), message_id)
+            content = await self._prepare_attachment(Path(filename), message_id, caption)
             recipient = PublicKey.parse(recipient_value)
-            gift_wrap = create_direct_gift_wrap(self.identity.keys, recipient, content)
+            rumor = create_direct_rumor(self.identity.keys, recipient, content)
+            gift_wrap = nip59_make_gift_wrap(self.identity.keys, recipient, rumor)
             recipient_relays = await self._recipient_inbox_relays(client, recipient)
             successful = await self._publish_event(
                 client,
                 gift_wrap,
                 SendEventTarget.to([RelayUrl.parse(value) for value in recipient_relays]),
             )
-            self_copy = create_direct_gift_wrap(
-                self.identity.keys,
-                recipient,
-                content,
-                wrap_for=self.identity.keys.public_key(),
+            self_copy = nip59_make_gift_wrap(
+                self.identity.keys, self.identity.keys.public_key(), rumor
             )
             try:
                 await self._publish_event(
@@ -444,7 +513,9 @@ class NostrTransport(QThread):
                 )
             except Exception:
                 pass
-            self.message_published.emit(message_id, gift_wrap.id().to_hex(), successful)
+            self.message_published.emit(
+                message_id, gift_wrap.id().to_hex(), successful, rumor.id().to_hex()
+            )
         except Exception as error:
             self.message_failed.emit(message_id, str(error))
 
@@ -456,15 +527,18 @@ class NostrTransport(QThread):
         name: str,
         member_values: list[str],
         filename: str,
+        caption: str = "",
     ) -> None:
         try:
-            content = await self._prepare_attachment(Path(filename), message_id)
+            content = await self._prepare_attachment(Path(filename), message_id, caption)
         except Exception as error:
             self.message_failed.emit(message_id, str(error))
             return
         await self._send_group(client, message_id, group_id, name, member_values, content)
 
-    async def _prepare_attachment(self, path: Path, message_id: int = 0) -> str:
+    async def _prepare_attachment(
+        self, path: Path, message_id: int = 0, caption: str = ""
+    ) -> str:
         size = path.stat().st_size
         if size > self.max_upload_bytes:
             raise ValueError("Attachment exceeds the configured upload limit.")
@@ -494,6 +568,7 @@ class NostrTransport(QThread):
             "x": digest,
             "ox": original_digest,
             "alt": path.name,
+            "caption": caption.strip(),
             "key": base64.b64encode(key).decode("ascii"),
         }
         if mime_type.startswith("image/"):
@@ -656,10 +731,82 @@ class NostrTransport(QThread):
             except Exception:
                 pass
             self.message_published.emit(
-                message_id, first_event_id, ", ".join(sorted(accepted_relays))
+                message_id,
+                first_event_id,
+                ", ".join(sorted(accepted_relays)),
+                rumor.id().to_hex(),
             )
         except Exception as error:
             self.message_failed.emit(message_id, str(error))
+
+    async def _send_reaction(
+        self,
+        client: Client,
+        outbox_id: int,
+        target_ref: str,
+        emoji: str,
+        active: bool,
+        created_at: int,
+        recipient_values: list[str],
+        group_id: str,
+        group_name: str,
+    ) -> None:
+        try:
+            content = encode_reaction(target_ref, emoji, active)
+            own_key = self.identity.keys.public_key()
+            own = own_key.to_hex()
+            recipients = [
+                PublicKey.parse(value)
+                for value in dict.fromkeys(recipient_values)
+                if PublicKey.parse(value).to_hex() != own
+            ]
+            if not recipients:
+                raise ValueError("Reaction has no recipient.")
+            if group_id:
+                rumor = create_group_rumor(
+                    self.identity.keys,
+                    [*recipients, own_key],
+                    group_id,
+                    group_name or "Encrypted group",
+                    content,
+                    self.identity.record.username,
+                    created_at,
+                )
+            else:
+                rumor = create_direct_rumor(
+                    self.identity.keys, recipients[0], content, created_at
+                )
+            accepted_relays: set[str] = set()
+            for recipient in recipients:
+                wrap = nip59_make_gift_wrap(self.identity.keys, recipient, rumor)
+                inbox_relays = await self._recipient_inbox_relays(client, recipient)
+                accepted_relays.update(
+                    (
+                        await self._publish_event(
+                            client,
+                            wrap,
+                            SendEventTarget.to(
+                                [RelayUrl.parse(value) for value in inbox_relays]
+                            ),
+                        )
+                    ).split(", ")
+                )
+            self_wrap = nip59_make_gift_wrap(self.identity.keys, own_key, rumor)
+            try:
+                await self._publish_event(
+                    client,
+                    self_wrap,
+                    SendEventTarget.to(
+                        [RelayUrl.parse(value) for value in self.inbox_relay_urls]
+                    ),
+                )
+            except Exception:
+                pass
+            self.reaction_published.emit(
+                outbox_id, rumor.id().to_hex(), ", ".join(sorted(accepted_relays))
+            )
+        except Exception as error:
+            self.reaction_failed.emit(outbox_id, str(error))
 
     async def _fetch_profiles(self, client: Client, pubkey_values: list[str]) -> None:
         authors: list[PublicKey] = []
@@ -931,8 +1078,12 @@ class NostrTransport(QThread):
         destination = self.attachments_directory / safe_name
         destination.write_bytes(plaintext)
         mime_type = str(envelope.get("type", "application/octet-stream")).lower()
+        caption = str(envelope.get("caption") or "").strip()
+        description = f"📎 {name}\nDownloaded, decrypted, and SHA-256 verified"
+        if caption:
+            description = f"{caption}\n{description}"
         return {
-            "content": f"📎 {name}\nDownloaded, decrypted, and SHA-256 verified",
+            "content": description,
             "path": str(destination),
             "mime": mime_type,
         }

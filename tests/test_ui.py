@@ -5,18 +5,28 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QEvent, QMimeData, Qt
+from PyQt6.QtCore import QEvent, QMimeData, QPoint, Qt, QUrl
 from PyQt6.QtGui import QImage
 from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
-from PyQt6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton, QTextBrowser
+from PyQt6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QTextBrowser,
+)
+from nostr_sdk import Keys
 
 from fsociety_client.database import ClientDatabase
 from fsociety_client.identity import IdentityVault, RecoveryDialog
 from fsociety_client.models import Message
+from fsociety_client.reactions import MESSAGE_REACTION_EMOJIS, encode_reaction
 from fsociety_client.theme import APP_STYLESHEET
 from fsociety_client.window import (
     GROUP_CONTROL_PREFIX,
@@ -277,6 +287,112 @@ class ClientInteractionTests(unittest.TestCase):
         self.assertEqual(pasted[0].size(), image.size())
         self.assertEqual(composer.toPlainText(), "")
         composer.close()
+
+    def test_message_composer_accepts_unique_local_files_from_drop_mime(self) -> None:
+        first = Path(self.temporary_directory.name, "first.png")
+        second = Path(self.temporary_directory.name, "second.zip")
+        first.write_bytes(b"image")
+        second.write_bytes(b"archive")
+        mime = QMimeData()
+        mime.setUrls(
+            [
+                QUrl.fromLocalFile(str(first)),
+                QUrl.fromLocalFile(str(first)),
+                QUrl("https://example.com/not-local"),
+                QUrl.fromLocalFile(str(second)),
+            ]
+        )
+        self.assertEqual(MessageComposer.local_files(mime), [first, second])
+
+    def test_message_bubble_displays_aggregated_selected_reactions(self) -> None:
+        message = self.database.list_messages("zero")[0]
+        own = "aa" * 32
+        bubble = MessageBubble(
+            message,
+            reactions=[
+                {
+                    "emoji": "👍",
+                    "reaction_count": 2,
+                    "authors": f"{own},{'bb' * 32}",
+                }
+            ],
+            own_pubkey=own,
+        )
+        labels = [label.text() for label in bubble.findChildren(QLabel)]
+        self.assertIn("👍 2", labels)
+        bubble.close()
+
+    def test_incoming_reaction_updates_target_without_creating_message(self) -> None:
+        peer = "01" * 32
+        message = self.database.list_messages("zero")[0]
+        self.database.set_message_reference(message.id, "ab" * 32)
+        before = len(self.database.list_messages("zero"))
+        self.window._direct_message_received(
+            {
+                "sender": peer,
+                "content": encode_reaction("ab" * 32, "😂", True),
+                "event_id": "cd" * 32,
+                "message_ref": "ef" * 32,
+                "sent_at": 1700000100,
+                "recipients": [],
+                "group_id": "",
+                "self_copy": False,
+            }
+        )
+        self.assertEqual(len(self.database.list_messages("zero")), before)
+        reactions = self.database.list_message_reactions(message.id)
+        self.assertEqual(reactions[0]["emoji"], "😂")
+        self.assertEqual(reactions[0]["reaction_count"], 1)
+
+    def test_reaction_picker_is_clickable_emoji_grid_with_writing_hand(self) -> None:
+        conversation = next(
+            item for item in self.database.list_conversations() if item.id == "zero"
+        )
+        message = self.database.list_messages("zero")[0]
+        self.database.set_message_reference(message.id, "ab" * 32)
+        self.window.chat.show_conversation(conversation)
+        selected: list[tuple[int, str, bool]] = []
+        self.window.chat.send_reaction = (
+            lambda message_id, current, emoji, active: selected.append(
+                (message_id, emoji, active)
+            )
+        )
+
+        def click_writing_hand(menu: QMenu, position: QPoint):
+            buttons = [
+                button
+                for button in menu.findChildren(QPushButton)
+                if button.text() in MESSAGE_REACTION_EMOJIS
+            ]
+            self.assertGreater(len(buttons), 4)
+            writing_hand = next(button for button in buttons if button.text() == "✍️")
+            self.assertNotIn("REACT", writing_hand.text().upper())
+            writing_hand.click()
+            return None
+
+        with patch.object(QMenu, "exec", click_writing_hand):
+            self.window.chat._show_message_actions(message, QPoint(10, 10))
+        self.application.processEvents()
+        self.assertEqual(selected, [(message.id, "✍️", True)])
+
+    def test_local_reaction_chip_is_visible_before_relay_acknowledgement(self) -> None:
+        conversation = next(
+            item for item in self.database.list_conversations() if item.id == "zero"
+        )
+        message = self.database.list_messages("zero")[0]
+        self.database.set_message_reference(message.id, "ab" * 32)
+        keys = Keys.generate()
+        own = keys.public_key().to_hex()
+        self.window.identity = SimpleNamespace(keys=keys)
+        self.window.chat.own_pubkey = own
+        self.window.chat.show_conversation(conversation)
+
+        self.window._send_message_reaction(message.id, conversation, "✍️", True)
+
+        row = self.window.chat.message_rows[message.id]
+        labels = [label.text() for label in row.findChildren(QLabel)]
+        self.assertIn("✍️", labels)
+        self.assertEqual(len(self.database.pending_reaction_outbox()), 1)
 
     def test_emote_is_inserted_at_the_current_cursor_position(self) -> None:
         self.window.chat.input.setPlainText("hello world")

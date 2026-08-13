@@ -1,6 +1,6 @@
 # fsociety User Guide
 
-This guide covers the fsociety desktop client, **Open Beta v0.3.3**, on
+This guide covers the fsociety desktop client, **Open Beta v0.3.4**, on
 Windows and Linux. fsociety is a decentralized messenger built on Nostr. It
 uses NIP-17 encrypted messages for direct chats and private communities,
 Blossom for encrypted attachments, and local SQLite databases for portable
@@ -244,7 +244,11 @@ Group** in Communities:
 ## Send files, images, and videos
 
 Click the attachment button to select a file. An image can also be pasted from
-the clipboard directly into the message composer.
+the clipboard directly into the message composer. To share operating-system
+files by drag and drop, drop them on the active message composer. The composer
+highlights when the drop is accepted, then shows a confirmation list before
+anything is queued. Up to 20 unique files can be confirmed together, with an
+optional caption that applies to every file in that drop.
 
 Before upload, attachments are encrypted locally with AES-256-GCM. The encrypted
 blob is uploaded to a configured Blossom server, and the encrypted message
@@ -266,6 +270,22 @@ try a supported file format.
 
 Attachments stored on Blossom are not guaranteed permanent. Preserve important
 files separately.
+
+## React to messages
+
+Right-click a delivered direct or group message and open **React to message**.
+Choose an emoji from the compact grid to add it; choose the selected emoji again to remove it. Identical
+reactions are combined into a count beneath the message, and the current user's
+selections use a distinct highlight.
+
+The selected reaction appears on the message immediately. Encrypted relay
+publication and retry continue in the background without requiring the user to
+leave and reopen the conversation.
+
+Reactions are encrypted and synchronized through the same NIP-17 inbox model as
+messages. If the client is offline, changes remain queued and retry after the
+transport reconnects. Messages received from releases that predate stable
+inner-message references do not support reactions.
 
 ## Use the Network panel
 
@@ -310,7 +330,7 @@ active.
 
 ### Find or operate a Nostr relay
 
-- Use the [Nostr.Watch relay directory](https://nostr.watch/relays/find) to
+- Use the [Nostr.Watch relay directory](https://nostr.watch) to
   discover public relays and review their reported availability.
 - Read the official
   [NIP-11 Relay Information Document](https://github.com/nostr-protocol/nips/blob/master/11.md)

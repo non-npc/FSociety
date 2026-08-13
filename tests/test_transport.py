@@ -25,9 +25,24 @@ from fsociety_client.transport import (
     unwrap_direct_gift,
     wrap_encrypted_blob,
 )
+from fsociety_client.reactions import decode_reaction
 
 
 class NostrTransportCryptoTests(unittest.TestCase):
+    def test_attachment_commands_preserve_optional_caption(self) -> None:
+        identity = SimpleNamespace(keys=Keys.generate())
+        transport = NostrTransport(identity, [], "", "", False)
+        transport.send_attachment(1, "aa" * 32, "photo.png", "caption")
+        command, values = transport.commands.get_nowait()
+        self.assertEqual(command, "send_attachment")
+        self.assertEqual(values[-1], "caption")
+        transport.send_group_attachment(
+            2, "group:test", "Test", ["bb" * 32], "photo.png", "group caption"
+        )
+        command, values = transport.commands.get_nowait()
+        self.assertEqual(command, "send_group_attachment")
+        self.assertEqual(values[-1], "group caption")
+
     def test_nip42_auth_event_is_signed_without_async_callback(self) -> None:
         keys = Keys.generate()
         relay = RelayUrl.parse("wss://inbox.test")
@@ -103,8 +118,83 @@ class NostrTransportCryptoTests(unittest.TestCase):
             [sender.public_key().to_hex()],
         )
         recovered = unwrap_direct_gift(sender, sender_wrap)
+        delivered = unwrap_direct_gift(recipient, recipient_wrap)
         self.assertEqual(recovered["content"], "private hello")
         self.assertIn(recipient.public_key().to_hex(), recovered["recipients"])
+        self.assertEqual(recovered["message_ref"], delivered["message_ref"])
+
+    def test_direct_reaction_is_private_and_targets_stable_message_reference(self) -> None:
+        sender = Keys.generate()
+        recipient = Keys.generate()
+        identity = SimpleNamespace(
+            keys=sender, record=SimpleNamespace(username="alice")
+        )
+        transport = NostrTransport(
+            identity,
+            ["wss://inbox.test"],
+            "https://primary.test",
+            "",
+            False,
+            inbox_relay_urls=["wss://inbox.test"],
+        )
+        transport._recipient_inbox_relays = AsyncMock(return_value=["wss://inbox.test"])
+        transport._publish_event = AsyncMock(return_value="wss://inbox.test")
+        asyncio.run(
+            transport._send_reaction(
+                SimpleNamespace(),
+                3,
+                "ab" * 32,
+                "🔥",
+                True,
+                1700000000,
+                [recipient.public_key().to_hex()],
+                "",
+                "",
+            )
+        )
+        recipient_wrap = transport._publish_event.await_args_list[0].args[1]
+        payload = unwrap_direct_gift(recipient, recipient_wrap)
+        reaction = decode_reaction(str(payload["content"]))
+        self.assertEqual(reaction["target"], "ab" * 32)
+        self.assertEqual(reaction["emoji"], "🔥")
+        self.assertTrue(reaction["active"])
+
+    def test_group_reaction_uses_one_stable_rumor_for_every_member(self) -> None:
+        sender = Keys.generate()
+        first = Keys.generate()
+        second = Keys.generate()
+        identity = SimpleNamespace(
+            keys=sender, record=SimpleNamespace(username="alice")
+        )
+        transport = NostrTransport(
+            identity,
+            ["wss://inbox.test"],
+            "",
+            "",
+            False,
+            inbox_relay_urls=["wss://inbox.test"],
+        )
+        transport._recipient_inbox_relays = AsyncMock(return_value=["wss://inbox.test"])
+        transport._publish_event = AsyncMock(return_value="wss://inbox.test")
+        asyncio.run(
+            transport._send_reaction(
+                SimpleNamespace(),
+                4,
+                "ab" * 32,
+                "👍",
+                True,
+                1700000000,
+                [first.public_key().to_hex(), second.public_key().to_hex()],
+                "group:test",
+                "Test group",
+            )
+        )
+        first_wrap = transport._publish_event.await_args_list[0].args[1]
+        second_wrap = transport._publish_event.await_args_list[1].args[1]
+        first_payload = unwrap_direct_gift(first, first_wrap)
+        second_payload = unwrap_direct_gift(second, second_wrap)
+        self.assertEqual(first_payload["group_id"], "group:test")
+        self.assertEqual(first_payload["message_ref"], second_payload["message_ref"])
 
     def test_encrypted_blob_png_carrier_is_valid_and_round_trips(self) -> None:
         encrypted_blob = b"ciphertext" * 100
@@ -129,12 +219,15 @@ class NostrTransportCryptoTests(unittest.TestCase):
                 return_value=(["https://primary.test/blob.png"], "aa" * 32)
             )
             with patch.object(transport, "_upload_blob", upload):
-                content = asyncio.run(transport._prepare_attachment(path))
+                content = asyncio.run(
+                    transport._prepare_attachment(path, caption="field evidence")
+                )
             self.assertEqual(upload.await_args.args[1], "image/png")
             envelope = json.loads(content.removeprefix("fsociety-attachment:"))
             self.assertEqual(envelope["container"], "fsociety-encrypted-png-v1")
             self.assertEqual(envelope["type"], "image/png")
             self.assertEqual(envelope["dim"], "20x10")
+            self.assertEqual(envelope["caption"], "field evidence")
 
     def test_rar_upload_preserves_archive_type_inside_png_carrier(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
